@@ -22,7 +22,7 @@ import torch.distributed as dist
 CUDA_VISIBLE_DEVICES=0 python data_synthesis_without_optim.py \
     --exp-name "WO_OPTIM_ImageNet_1k_Recover_IPC_10" \
     --ipc-number 10 \
-    --train-data-path /home/dataset/ilsvrc2012/train/ --gpu-id 0
+    --train-data-path /home/Bigdata/imagenet/train --gpu-id 0
 """
 
 

@@ -65,6 +65,12 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
 
     sub_batch_size = int(batch_size // ngpus_per_node)
 
+    initial_img_cache = PreImgPathCache(args.initial_img_dir,transforms=transforms.Compose([
+                                                             transforms.Resize((224,224)),
+                                                             transforms.RandomHorizontalFlip(),
+                                                             transforms.ToTensor(),
+                                                             transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                                                  std=[0.229, 0.224, 0.225])]))
     if not load_tag:
         train_dataset = torchvision.datasets.ImageFolder(root=args.train_data_path,
                                                          transform=transforms.Compose([
@@ -118,8 +124,13 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
             continue
         print(f"In GPU {gpu}, targets is set as: \n{targets}\n, ipc_ids is set as: \n{ipc_ids}")
 
-        inputs = torch.randn((sub_batch_size, 3, 224, 224), requires_grad=True, device=f'cuda:{gpu}',
-                             dtype=data_type)
+        if args.initial_img_dir is not None:
+            inputs = torch.stack([initial_img_cache.random_img_sample(_target) for _target in targets.tolist()],0).to(f'cuda:{gpu}').to(data_type)
+            inputs.requires_grad_(True)
+        else:
+            inputs = torch.randn((sub_batch_size, 3, 224, 224), requires_grad=True, device=f'cuda:{gpu}',
+                                 dtype=data_type)
+
         iterations_per_layer = args.iteration
         lim_0, lim_1 = args.jitter, args.jitter
         optimizer = optim.Adam([inputs], lr=args.lr, betas=[0.5, 0.9], eps=1e-8)
@@ -282,6 +293,7 @@ def main_syn():
     parser.add_argument('--exp-name', type=str, default='test',
                         help='name of the experiment, subfolder under syn_data_path')
     parser.add_argument('--ipc-number', type=int, default=50, help='the number of each ipc')
+    parser.add_argument('--initial-img-dir', type=str, default="./syn_data/WO_OPTIM_ImageNet_1k_Recover_IPC_10", help="imgs used for initialization")
     parser.add_argument('--syn-data-path', type=str,
                         default='./syn_data', help='where to store synthetic data')
     parser.add_argument('--store-best-images', action='store_true',

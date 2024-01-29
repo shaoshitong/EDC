@@ -267,3 +267,28 @@ def get_image_prior_losses(inputs_jit):
     loss_var_l1 = loss_var_l1 * 255.0
 
     return loss_var_l1, loss_var_l2
+
+
+from torchvision.datasets import ImageFolder
+
+
+class PreImgPathCache(ImageFolder):
+    def __init__(
+            self,
+            root,
+            transforms,
+    ):
+        super(PreImgPathCache, self).__init__(root,transform=transforms)
+        self.label2img = [[] for _ in range(len(self.classes))]
+        for k, v in self.imgs:
+            self.label2img[v].append(k)
+
+    def random_img_sample(self,idx):
+        imgpaths = self.label2img[idx]
+        new_idx = np.random.choice(len(imgpaths),(1,),replace=False)[0]
+        imgpath = imgpaths[new_idx]
+        sample = self.loader(imgpath)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        print(sample.shape)
+        return sample
