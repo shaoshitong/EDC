@@ -230,7 +230,7 @@ def main_syn():
         model_teacher.append(models.__dict__[name](pretrained=True))
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
-    port_id = 10000 + np.random.randint(0, 1000)
+    port_id = 10001 + np.random.randint(0, 1000)
     args.dist_url = 'tcp://127.0.0.1:' + str(port_id)
     args.distributed = True
     ngpus_per_node = torch.cuda.device_count()

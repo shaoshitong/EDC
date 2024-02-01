@@ -141,7 +141,7 @@ def main():
     args = get_args()
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
-    port_id = 10000 + np.random.randint(0, 1000)
+    port_id = 10002 + np.random.randint(0, 1000)
     args.dist_url = 'tcp://127.0.0.1:' + str(port_id)
     args.distributed = True
     ngpus_per_node = torch.cuda.device_count()
@@ -223,13 +223,13 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.cos == True:
         scheduler = LambdaLR(optimizer,
                              lambda step: 0.5 * (
-                                     1. + math.cos(math.pi * step / args.epochs)) if step <= args.epochs else 0,
+                                     1. + math.cos(math.pi * step / (3*args.epochs/2))) if step <= (3*args.epochs/2) else 0,
                              last_epoch=-1)
     else:
         scheduler = LambdaLR(optimizer,
-                             lambda step: (1.0 - step / args.epochs) if step <= args.epochs else 0, last_epoch=-1)
+                             lambda step: (1.0 - step / (3*args.epochs/2)) if step <= (3*args.epochs/2) else 0, last_epoch=-1)
 
-    args.best_acc1 = 0
+    args.best_acc1 = 0 # 31.4% -> 34.4% (background)
     args.optimizer = optimizer
     args.scheduler = scheduler
     args.train_loader = train_loader
