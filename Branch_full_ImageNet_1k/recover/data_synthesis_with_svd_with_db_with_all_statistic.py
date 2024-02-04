@@ -48,20 +48,26 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
     save_every = 100
     batch_size = args.batch_size
     best_cost = 1e4
-
-    load_tag = True
+    load_tag_dict = [False for i in range(len(model_teacher))]
     loss_r_feature_layers = [[] for _ in range(len(model_teacher))]
+    load_tag = True
+
     for i, (_model_teacher) in enumerate(model_teacher):
         for name, module in _model_teacher.named_modules():
             if isinstance(module, nn.BatchNorm2d):
                 loss_r_feature_layers[i].append(BNFeatureHook(module,training_momentum=args.training_momentum))
             elif isinstance(module, nn.Conv2d):
+                if args.aux_teacher[i] in ["wide_resnet50_2", "regnet_y_400mf", "regnet_x_400mf"]:
+                    full_name = str(_model_teacher.__class__.__name__) + "_" + str(args.aux_teacher[i]) + "=" + name
+                else:
+                    full_name = str(_model_teacher.__class__.__name__) + "=" + name
                 _hook_module = ConvFeatureHook(module, save_path=args.statistic_path,
-                                               name=str(_model_teacher.__class__.__name__) + "=" + name,
+                                               name=full_name,
                                                gpu=gpu, training_momentum=args.training_momentum,
                                                drop_rate=args.drop_rate)
                 _hook_module.set_hook(pre=True)
                 load_tag = load_tag & _hook_module.load_tag
+                load_tag_dict[i] = _hook_module.load_tag
                 loss_r_feature_layers[i].append(_hook_module)
 
     sub_batch_size = int(batch_size // ngpus_per_node)
@@ -89,13 +95,14 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
 
         with torch.no_grad():
             for j, _model_teacher in enumerate(model_teacher):
-                for i, (data, _) in tqdm(enumerate(train_loader)):
-                    data = data.cuda(gpu)
-                    _ = _model_teacher(data)
-                print(f"Compute {_model_teacher}")
-                for _loss_t_feature_layer in loss_r_feature_layers[j]:
-                    if isinstance(_loss_t_feature_layer, ConvFeatureHook):
-                        _loss_t_feature_layer.save()
+                if not load_tag_dict[j]:
+                    print(f"conduct backbone {args.aux_teacher[i]} statistics")
+                    for i, (data, _) in tqdm(enumerate(train_loader)):
+                        data = data.cuda(gpu)
+                        _ = _model_teacher(data)
+                    for _loss_t_feature_layer in loss_r_feature_layers[j]:
+                        if isinstance(_loss_t_feature_layer, ConvFeatureHook):
+                            _loss_t_feature_layer.save()
 
         print("Training Statistic Information Is Successfully Saved")
     else:
@@ -311,7 +318,7 @@ def main_syn():
     parser = argparse.ArgumentParser(
         "G-VBSM: applying generalized matching for data condensation")
     """Data save flags"""
-    parser.add_argument('--flatness', type=bool, default=True,
+    parser.add_argument('--flatness', action='store_true', default=True,
                         help='encourage the flatness or not')
     parser.add_argument('--exp-name', type=str, default='test',
                         help='name of the experiment, subfolder under syn_data_path')
@@ -369,7 +376,10 @@ def main_syn():
     if not os.path.exists(args.syn_data_path):
         os.makedirs(args.syn_data_path)
 
-    aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5"]  # "densenet121
+    aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", "densenet121", "alexnet",
+                   "convnext_tiny","wide_resnet50_2"]
+    # aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5"]
+    args.aux_teacher = aux_teacher
     model_teacher = []
     for name in aux_teacher:
         model_teacher.append(models.__dict__[name](pretrained=True))
