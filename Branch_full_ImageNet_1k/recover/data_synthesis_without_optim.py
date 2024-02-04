@@ -17,6 +17,7 @@ from torchvision import transforms
 import torchvision.models as models
 import torch.utils.data.distributed
 import torch.distributed as dist
+mp.set_sharing_strategy('file_system')
 
 """
 CUDA_VISIBLE_DEVICES=0 python data_synthesis_without_optim.py \

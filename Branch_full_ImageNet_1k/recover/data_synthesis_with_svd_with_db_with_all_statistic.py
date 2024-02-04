@@ -17,11 +17,12 @@ import torch.utils
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import transforms
+import torch.functional as F
 import torchvision.models as models
 import torch.utils.data.distributed
 import multiprocessing
 import torch.distributed as dist
-
+mp.set_sharing_strategy('file_system')
 from utils import *
 
 
@@ -138,6 +139,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
         criterion = nn.CrossEntropyLoss()
         criterion = criterion.cuda()
 
+        inputs_ema = EMA(alpha=0.999, initial_value=inputs)
         for iteration in range(iterations_per_layer):
             # learning rate scheduling
             lr_scheduler(optimizer, iteration, iteration)
@@ -147,17 +149,27 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                 transforms.RandomHorizontalFlip(),
             ])
             inputs_jit = aug_function(inputs)
+            inputs_ema_jit = aug_function(inputs_ema.value)
 
             # apply random jitter offsets
             off1 = random.randint(0, lim_0)
             off2 = random.randint(0, lim_1)
             inputs_jit = torch.roll(inputs_jit, shifts=(off1, off2), dims=(2, 3))
+            inputs_ema_jit = torch.roll(inputs_ema_jit, shifts=(off1, off2), dims=(2, 3))
 
             # forward pass
             optimizer.zero_grad()
             id = counter % len(model_teacher)
             counter += 1
+            if args.flatness:
+                with torch.no_grad():
+                    for (idx, mod) in enumerate(loss_r_feature_layers[id]):
+                        mod.set_ema()
+                    ema_sub_outputs = model_teacher[id](inputs_ema_jit)
+            for (idx, mod) in enumerate(loss_r_feature_layers[id]):
+                mod.set_ori()
             sub_outputs = model_teacher[id](inputs_jit)
+
             # R_cross classification loss
             loss_ce = criterion(sub_outputs, targets)
 
@@ -165,6 +177,10 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
             rescale = [args.first_multiplier] + [1. for _ in range(len(loss_r_feature_layers[id]) - 1)]
             loss_r_feature = sum(
                 [mod.r_feature * rescale[idx] for (idx, mod) in enumerate(loss_r_feature_layers[id])])
+
+            if args.flatness:
+                loss_ema_ce = F.kl_div(torch.log_softmax(sub_outputs / 4, dim=1),
+                                        torch.softmax(ema_sub_outputs / 4, dim=1))
 
             # R_prior losses
             _, loss_var_l2 = get_image_prior_losses(inputs_jit)
@@ -202,13 +218,17 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                        args.nuc_norm * nuc_norm + \
                        args.r_loss * loss_r_feature
 
-            loss = loss_ce + loss_aux
+            if args.flatness:
+                loss = loss_ce + loss_aux + loss_ema_ce
+            else:
+                loss = loss_ce + loss_aux
 
             if iteration % save_every == 0 and args.gpu == 0:
                 print("------------iteration {}----------".format(iteration))
                 print("total loss", loss.item())
                 print("nuc norm loss", (args.nuc_norm * nuc_norm).item())
                 print("loss_r_feature", loss_r_feature.item())
+                print("loss_ema_ce", loss_ema_ce.item() if args.flatness else None)
                 print("main criterion",
                       criterion(sub_outputs, targets).item())
                 # comment below line can speed up the training (no validation process)
@@ -227,6 +247,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                     args.average_grad_ratio) * grad
             optimizer.step()
 
+            inputs_ema.ema_update(inputs)
             # clip color outlayers
             inputs.data = clip(inputs.data)
 
@@ -290,6 +311,8 @@ def main_syn():
     parser = argparse.ArgumentParser(
         "G-VBSM: applying generalized matching for data condensation")
     """Data save flags"""
+    parser.add_argument('--flatness', type=bool, default=True,
+                        help='encourage the flatness or not')
     parser.add_argument('--exp-name', type=str, default='test',
                         help='name of the experiment, subfolder under syn_data_path')
     parser.add_argument('--ipc-number', type=int, default=50, help='the number of each ipc')

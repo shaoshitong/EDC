@@ -98,12 +98,33 @@ def denormalize(image_tensor, use_fp16=False):
     return image_tensor
 
 
+class EMA(object):
+    def __init__(self, alpha, initial_value=None):
+        self.alpha = alpha
+        self.value = initial_value
+
+    @torch.no_grad()
+    def ema_update(self, x):
+        if self.value is None:
+            self.value = x
+        else:
+            self.value = self.alpha * self.value + (1 - self.alpha) * x
+
+
 class BNFeatureHook():
     def __init__(self, module, training_momentum=0.4):
         self.hook = module.register_forward_hook(self.hook_fn)
         self.dd_var = 0.
         self.dd_mean = 0.
         self.momentum = training_momentum
+        self.bn_statics_list = []
+        self.ema_tag = False
+
+    def set_ori(self):
+        self.ema_tag = False
+    
+    def set_ema(self):
+        self.ema_tag = True
 
     def hook_fn(self, module, input, output):
         nch = input[0].shape[1]
@@ -111,17 +132,21 @@ class BNFeatureHook():
         mean = input_0.mean([0, 2, 3])
         var = (input_0.permute(1, 0, 2, 3).contiguous().reshape([nch, -1])).var(1, unbiased=False)
 
-        with torch.no_grad():
-            if isinstance(self.dd_var, int):
-                self.dd_var = var
-                self.dd_mean = mean
-            else:
-                self.dd_var = self.momentum * self.dd_var + (1 - self.momentum) * var
-                self.dd_mean = self.momentum * self.dd_mean + (1 - self.momentum) * mean
-
-        r_feature = torch.norm(module.running_var.data - (self.dd_var + var - var.detach()), 2) + \
-                    torch.norm(module.running_mean.data - (self.dd_mean + mean - mean.detach()), 2)
-        self.r_feature = r_feature
+        if not self.ema_tag:
+            with torch.no_grad():
+                if isinstance(self.dd_var, int):
+                    self.dd_var = var
+                    self.dd_mean = mean
+                else:
+                    self.dd_var = self.momentum * self.dd_var + (1 - self.momentum) * var
+                    self.dd_mean = self.momentum * self.dd_mean + (1 - self.momentum) * mean
+            r_feature = torch.norm(module.running_var.data - (self.dd_var + var - var.detach()), 2) + \
+                        torch.norm(module.running_mean.data - (self.dd_mean + mean - mean.detach()), 2)
+            r_feature = r_feature + 0.25 * (torch.norm(self.bn_statics_list[0] - (self.dd_var + var - var.detach()), 2) + \
+                        torch.norm(self.bn_statics_list[1] - (self.dd_mean + mean - mean.detach()), 2))
+            self.r_feature = r_feature
+        else:
+            self.bn_statics_list = [var, mean]
 
     def close(self):
         self.hook.remove()
@@ -136,7 +161,6 @@ class ConvFeatureHook():
             self.hook = module.register_forward_hook(self.post_hook_fn)
         else:
             raise ModuleNotFoundError("module and name can not be None!")
-
         self.data_number = data_number
         self.dd_var = 0.
         self.dd_mean = 0.
@@ -148,7 +172,6 @@ class ConvFeatureHook():
         if not os.path.exists(dir):
             os.makedirs(dir, exist_ok=True)
         self.save_path = os.path.join(save_path, "ConvFeatureHook", name, "running.npz")
-
         if os.path.exists(self.save_path):
             npz_file = np.load(self.save_path)
             self.load_tag = True
@@ -162,6 +185,14 @@ class ConvFeatureHook():
             self.running_dd_mean = 0.
             self.running_patch_var = 0.
             self.running_patch_mean = 0.
+        self.conv_statics_list = []
+        self.ema_tag = False
+
+    def set_ori(self):
+        self.ema_tag = False
+    
+    def set_ema(self):
+        self.ema_tag = True
 
     def save(self):
         npz_file = {"running_dd_var": self.running_dd_var.cpu().numpy() if isinstance(self.running_dd_var,
@@ -214,24 +245,30 @@ class ConvFeatureHook():
         patch_mean = new_input_0.mean([1])
         patch_var = new_input_0.var([1], unbiased=False)
 
-        with torch.no_grad():
-            if isinstance(self.dd_var, int):
-                self.dd_var = dd_var
-                self.dd_mean = dd_mean
-                self.patch_var = patch_var
-                self.patch_mean = patch_mean
-            else:
-                self.dd_var = self.momentum * self.dd_var + (1 - self.momentum) * dd_var
-                self.dd_mean = self.momentum * self.dd_mean + (1 - self.momentum) * dd_mean
-                self.patch_var = self.momentum * self.patch_var + (1 - self.momentum) * patch_var
-                self.patch_mean = self.momentum * self.patch_mean + (1 - self.momentum) * patch_mean
+        if not self.ema_tag:
+            with torch.no_grad():
+                if isinstance(self.dd_var, int):
+                    self.dd_var = dd_var
+                    self.dd_mean = dd_mean
+                    self.patch_var = patch_var
+                    self.patch_mean = patch_mean
+                else:
+                    self.dd_var = self.momentum * self.dd_var + (1 - self.momentum) * dd_var
+                    self.dd_mean = self.momentum * self.dd_mean + (1 - self.momentum) * dd_mean
+                    self.patch_var = self.momentum * self.patch_var + (1 - self.momentum) * patch_var
+                    self.patch_mean = self.momentum * self.patch_mean + (1 - self.momentum) * patch_mean
 
-        r_feature = torch.norm(self.running_dd_var - (self.dd_var + dd_var - dd_var.detach()), 2) + \
-                    torch.norm(self.running_dd_mean - (self.dd_mean + dd_mean - dd_mean.detach()), 2) + \
-                    torch.norm(self.running_patch_mean - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
-                    torch.norm(self.running_patch_var - (self.patch_var + patch_var - patch_var.detach()), 2)
-
-        self.r_feature = r_feature
+            r_feature = torch.norm(self.running_dd_var - (self.dd_var + dd_var - dd_var.detach()), 2) + \
+                        torch.norm(self.running_dd_mean - (self.dd_mean + dd_mean - dd_mean.detach()), 2) + \
+                        torch.norm(self.running_patch_mean - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
+                        torch.norm(self.running_patch_var - (self.patch_var + patch_var - patch_var.detach()), 2)
+            r_feature = r_feature + 0.25 * (torch.norm(self.conv_statics_list[0] - (self.dd_var + dd_var - dd_var.detach()), 2) + \
+                        torch.norm(self.conv_statics_list[1] - (self.dd_mean + dd_mean - dd_mean.detach()), 2) + \
+                        torch.norm(self.conv_statics_list[2] - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
+                        torch.norm(self.conv_statics_list[3] - (self.patch_var + patch_var - patch_var.detach()), 2))
+            self.r_feature = r_feature
+        else:
+            self.conv_statics_list = [dd_var, dd_mean, patch_mean, patch_var]
 
     def close(self):
         self.hook.remove()
