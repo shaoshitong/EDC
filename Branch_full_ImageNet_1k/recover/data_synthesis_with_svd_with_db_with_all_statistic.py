@@ -96,7 +96,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
         with torch.no_grad():
             for j, _model_teacher in enumerate(model_teacher):
                 if not load_tag_dict[j]:
-                    print(f"conduct backbone {args.aux_teacher[i]} statistics")
+                    print(f"conduct backbone {args.aux_teacher[j]} statistics")
                     for i, (data, _) in tqdm(enumerate(train_loader)):
                         data = data.cuda(gpu)
                         _ = _model_teacher(data)
