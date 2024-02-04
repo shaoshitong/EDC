@@ -55,7 +55,9 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
     for i, (_model_teacher) in enumerate(model_teacher):
         for name, module in _model_teacher.named_modules():
             if isinstance(module, nn.BatchNorm2d):
-                loss_r_feature_layers[i].append(BNFeatureHook(module,training_momentum=args.training_momentum))
+                loss_r_feature_layers[i].append(BNFeatureHook(module,
+                                                              training_momentum=args.training_momentum,
+                                                              flatness_weight=args.flatness_weight))
             elif isinstance(module, nn.Conv2d):
                 if args.aux_teacher[i] in ["wide_resnet50_2", "regnet_y_400mf", "regnet_x_400mf"]:
                     full_name = str(_model_teacher.__class__.__name__) + "_" + str(args.aux_teacher[i]) + "=" + name
@@ -64,7 +66,8 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                 _hook_module = ConvFeatureHook(module, save_path=args.statistic_path,
                                                name=full_name,
                                                gpu=gpu, training_momentum=args.training_momentum,
-                                               drop_rate=args.drop_rate)
+                                               drop_rate=args.drop_rate,
+                                               flatness_weight=args.flatness_weight)
                 _hook_module.set_hook(pre=True)
                 load_tag = load_tag & _hook_module.load_tag
                 load_tag_dict[i] = _hook_module.load_tag
@@ -226,7 +229,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                        args.r_loss * loss_r_feature
 
             if args.flatness:
-                loss = loss_ce + loss_aux + loss_ema_ce
+                loss = loss_ce + loss_aux + loss_ema_ce * args.flatness_weight
             else:
                 loss = loss_ce + loss_aux
 
@@ -320,6 +323,8 @@ def main_syn():
     """Data save flags"""
     parser.add_argument('--flatness', action='store_true', default=True,
                         help='encourage the flatness or not')
+    parser.add_argument('--flatness-weight', type=float, default=0.25,
+                        help='the weight of flatness weight')
     parser.add_argument('--exp-name', type=str, default='test',
                         help='name of the experiment, subfolder under syn_data_path')
     parser.add_argument('--ipc-number', type=int, default=50, help='the number of each ipc')

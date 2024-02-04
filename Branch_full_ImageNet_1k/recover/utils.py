@@ -112,7 +112,7 @@ class EMA(object):
 
 
 class BNFeatureHook():
-    def __init__(self, module, training_momentum=0.4):
+    def __init__(self, module, training_momentum=0.4, flatness_weight=0.25):
         self.hook = module.register_forward_hook(self.hook_fn)
         self.dd_var = 0.
         self.dd_mean = 0.
@@ -121,6 +121,7 @@ class BNFeatureHook():
         self.ema_tag = False
         self.flatness = False
         self.closeness = False
+        self.flatness_weight = flatness_weight
 
     def set_ori(self, flatness=False):
         self.ema_tag = False
@@ -146,7 +147,7 @@ class BNFeatureHook():
             r_feature = torch.norm(module.running_var.data - (self.dd_var + var - var.detach()), 2) + \
                         torch.norm(module.running_mean.data - (self.dd_mean + mean - mean.detach()), 2)
             if self.flatness:
-                r_feature = r_feature + 0.25 * (torch.norm(self.bn_statics_list[0] - (self.dd_var + var - var.detach()), 2) + \
+                r_feature = r_feature + self.flatness_weight * (torch.norm(self.bn_statics_list[0] - (self.dd_var + var - var.detach()), 2) + \
                             torch.norm(self.bn_statics_list[1] - (self.dd_mean + mean - mean.detach()), 2))
             self.r_feature = r_feature
         else:
@@ -158,7 +159,7 @@ class BNFeatureHook():
 
 class ConvFeatureHook():
     def __init__(self, module=None, save_path="./", data_number=1281167, name=None, gpu=0, training_momentum=0.4,
-                 drop_rate=0.4):
+                 drop_rate=0.4, flatness_weight=0.25):
 
         self.module = module
         if module is not None and name is not None:
@@ -170,6 +171,7 @@ class ConvFeatureHook():
         self.dd_mean = 0.
         self.patch_var = 0.
         self.patch_mean = 0.
+        self.flatness_weight = flatness_weight
         self.momentum = training_momentum  # origin = 0.2
         self.drop_rate = drop_rate  # 0.0 0.4 0.8
         dir = os.path.join(save_path, "ConvFeatureHook", name)
@@ -269,7 +271,7 @@ class ConvFeatureHook():
                         torch.norm(self.running_patch_mean - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
                         torch.norm(self.running_patch_var - (self.patch_var + patch_var - patch_var.detach()), 2)
             if self.flatness:
-                r_feature = r_feature + 0.25 * (torch.norm(self.conv_statics_list[0] - (self.dd_var + dd_var - dd_var.detach()), 2) + \
+                r_feature = r_feature + self.flatness_weight * (torch.norm(self.conv_statics_list[0] - (self.dd_var + dd_var - dd_var.detach()), 2) + \
                             torch.norm(self.conv_statics_list[1] - (self.dd_mean + dd_mean - dd_mean.detach()), 2) + \
                             torch.norm(self.conv_statics_list[2] - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
                             torch.norm(self.conv_statics_list[3] - (self.patch_var + patch_var - patch_var.detach()), 2))
