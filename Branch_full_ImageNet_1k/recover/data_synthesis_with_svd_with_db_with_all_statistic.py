@@ -174,7 +174,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                         mod.set_ema()
                     ema_sub_outputs = model_teacher[id](inputs_ema_jit)
             for (idx, mod) in enumerate(loss_r_feature_layers[id]):
-                mod.set_ori()
+                mod.set_ori(flatness=args.flatness)
             sub_outputs = model_teacher[id](inputs_jit)
 
             # R_cross classification loss

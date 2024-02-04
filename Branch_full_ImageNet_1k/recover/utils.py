@@ -119,9 +119,12 @@ class BNFeatureHook():
         self.momentum = training_momentum
         self.bn_statics_list = []
         self.ema_tag = False
+        self.flatness = False
+        self.closeness = False
 
-    def set_ori(self):
+    def set_ori(self, flatness=False):
         self.ema_tag = False
+        self.flatness = flatness
     
     def set_ema(self):
         self.ema_tag = True
@@ -142,7 +145,7 @@ class BNFeatureHook():
                     self.dd_mean = self.momentum * self.dd_mean + (1 - self.momentum) * mean
             r_feature = torch.norm(module.running_var.data - (self.dd_var + var - var.detach()), 2) + \
                         torch.norm(module.running_mean.data - (self.dd_mean + mean - mean.detach()), 2)
-            if hasattr(self,"bn_statics_list") and len(self.bn_statics_list)>0:
+            if self.flatness:
                 r_feature = r_feature + 0.25 * (torch.norm(self.bn_statics_list[0] - (self.dd_var + var - var.detach()), 2) + \
                             torch.norm(self.bn_statics_list[1] - (self.dd_mean + mean - mean.detach()), 2))
             self.r_feature = r_feature
@@ -188,9 +191,11 @@ class ConvFeatureHook():
             self.running_patch_mean = 0.
         self.conv_statics_list = []
         self.ema_tag = False
+        self.flatness = False
 
-    def set_ori(self):
+    def set_ori(self, flatness=False):
         self.ema_tag = False
+        self.flatness = flatness
     
     def set_ema(self):
         self.ema_tag = True
@@ -263,11 +268,12 @@ class ConvFeatureHook():
                         torch.norm(self.running_dd_mean - (self.dd_mean + dd_mean - dd_mean.detach()), 2) + \
                         torch.norm(self.running_patch_mean - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
                         torch.norm(self.running_patch_var - (self.patch_var + patch_var - patch_var.detach()), 2)
-            if hasattr(self,"conv_statics_list") and len(self.conv_statics_list)>0:
+            if self.flatness:
                 r_feature = r_feature + 0.25 * (torch.norm(self.conv_statics_list[0] - (self.dd_var + dd_var - dd_var.detach()), 2) + \
                             torch.norm(self.conv_statics_list[1] - (self.dd_mean + dd_mean - dd_mean.detach()), 2) + \
                             torch.norm(self.conv_statics_list[2] - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
                             torch.norm(self.conv_statics_list[3] - (self.patch_var + patch_var - patch_var.detach()), 2))
+
             self.r_feature = r_feature
         else:
             self.conv_statics_list = [dd_var, dd_mean, patch_mean, patch_var]
