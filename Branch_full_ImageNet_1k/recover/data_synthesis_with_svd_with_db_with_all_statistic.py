@@ -321,7 +321,7 @@ def main_syn():
     parser = argparse.ArgumentParser(
         "G-VBSM: applying generalized matching for data condensation")
     """Data save flags"""
-    parser.add_argument('--flatness', action='store_true', default=True,
+    parser.add_argument('--flatness', action='store_true', default=False,
                         help='encourage the flatness or not')
     parser.add_argument('--flatness-weight', type=float, default=0.25,
                         help='the weight of flatness weight')
@@ -381,8 +381,8 @@ def main_syn():
     if not os.path.exists(args.syn_data_path):
         os.makedirs(args.syn_data_path)
 
-    aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", "densenet121", "alexnet",
-                   "convnext_tiny","wide_resnet50_2"]
+    aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", 
+                   "wide_resnet50_2", "alexnet"] # "densenet121", "convnext_tiny"
     # aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5"]
     args.aux_teacher = aux_teacher
     model_teacher = []

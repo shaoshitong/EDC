@@ -134,7 +134,8 @@ def main_worker(gpu, ngpus_per_node, args):
             args.rank = args.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
-    aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5"][:args.candidate_number]  # "densenet121
+    aux_teacher =   ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", 
+                   "wide_resnet50_2", "alexnet", "densenet121", "convnext_tiny"][:args.candidate_number]  # "densenet121
     print("=> using pytorch pre-trained model '{}'".format(aux_teacher))
     model_teacher = []
     for name in aux_teacher:
@@ -259,8 +260,8 @@ def save(train_loader, model, dir_path, args):
             total_output.append(output)
 
         output = torch.stack(total_output, 0)
-        # norm = torch.norm(output, dim=[1,2], keepdim=True)
-        # output = output / norm * norm.mean(0,keepdim=True)
+        norm = torch.norm(output, dim=[1,2], keepdim=True)
+        output = output / norm * norm.mean(0,keepdim=True)
         output = output.mean(0)
         acc = (output.argmax(1) == target.to(output.device)).float().sum() / output.shape[0]
         total_acc += acc

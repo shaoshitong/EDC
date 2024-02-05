@@ -313,7 +313,7 @@ def train(model, args, epoch=None, gpu=0, ngpus_per_node=1, scaler=None):
 
         for accum_id in range(0, accum_step * ngpus_per_node, ngpus_per_node):
             if accum_id == accum_step * ngpus_per_node - ngpus_per_node and batch_idx == len(args.train_loader) - 1:
-                last_number = (images.shape[0] - small_bs * (accum_step * ngpus_per_node - ngpus_per_node)) // 2
+                last_number = (images.shape[0] - small_bs * (accum_step * ngpus_per_node - ngpus_per_node)) // ngpus_per_node
                 partial_images = images[
                                  accum_id * small_bs + last_number * gpu: accum_id * small_bs + last_number * (gpu + 1)]
                 partial_target = target[
