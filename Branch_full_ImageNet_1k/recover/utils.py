@@ -337,5 +337,4 @@ class PreImgPathCache(ImageFolder):
         sample = self.loader(imgpath)
         if self.transform is not None:
             sample = self.transform(sample)
-        print(sample.shape)
         return sample

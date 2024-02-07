@@ -260,8 +260,8 @@ def save(train_loader, model, dir_path, args):
             total_output.append(output)
 
         output = torch.stack(total_output, 0)
-        norm = torch.norm(output, dim=[1,2], keepdim=True)
-        output = output / norm * norm.mean(0,keepdim=True)
+        # norm = torch.norm(output, dim=[1,2], keepdim=True)
+        # output = output / norm * norm.mean(0,keepdim=True)
         output = output.mean(0)
         acc = (output.argmax(1) == target.to(output.device)).float().sum() / output.shape[0]
         total_acc += acc

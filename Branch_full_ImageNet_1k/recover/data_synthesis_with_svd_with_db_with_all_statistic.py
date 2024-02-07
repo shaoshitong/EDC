@@ -4,7 +4,7 @@ import os
 import random
 import argparse
 import collections
-import time
+import time,random
 
 from tqdm import tqdm
 import numpy as np
@@ -25,6 +25,15 @@ import torch.distributed as dist
 mp.set_sharing_strategy('file_system')
 from utils import *
 
+def set_random_seed(seed=42):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    import numpy as np
+    import random
+    np.random.seed(seed)
+    random.seed(seed)
 
 def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id_range):
     args.gpu = gpu
@@ -35,6 +44,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
 
     torch.cuda.set_device(args.gpu)
     model_teacher = [_model_teacher.cuda(gpu).eval() for _model_teacher in model_teacher]
+    set_random_seed()
 
     for _model_teacher in model_teacher:
         for p in _model_teacher.parameters():
@@ -169,7 +179,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
 
             # forward pass
             optimizer.zero_grad()
-            id = counter % len(model_teacher)
+            id = random.randint(0,len(model_teacher)-1)
             counter += 1
             if args.flatness:
                 with torch.no_grad():
@@ -247,7 +257,11 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
 
             # do image update
             loss.backward()
-
+            # with torch.no_grad():
+            #     grad = torch.norm(inputs.grad.view(inputs.grad.shape[0],-1),dim=[1])
+            #     print(grad.shape)
+            #     grad = grad.mean().item()
+            #     print(grad,args.aux_teacher[id])
             # If average all gradient
             # grad = torch.zeros_like(sub_inputs_jit[0][None,...])
             if args.average_grad_ratio > 0:
@@ -382,7 +396,7 @@ def main_syn():
         os.makedirs(args.syn_data_path)
 
     aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", 
-                   "wide_resnet50_2", "alexnet"] # "densenet121", "convnext_tiny"
+                   "wide_resnet50_2"] # "alexnet", "densenet121", "convnext_tiny"
     # aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5"]
     args.aux_teacher = aux_teacher
     model_teacher = []
