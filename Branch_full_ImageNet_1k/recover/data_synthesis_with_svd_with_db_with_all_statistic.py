@@ -396,7 +396,7 @@ def main_syn():
         os.makedirs(args.syn_data_path)
 
     aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", 
-                   "wide_resnet50_2"] # "alexnet", "densenet121", "convnext_tiny"
+                   "alexnet"] #, "wide_resnet50_2", "densenet121", "convnext_tiny"
     # aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5"]
     args.aux_teacher = aux_teacher
     model_teacher = []

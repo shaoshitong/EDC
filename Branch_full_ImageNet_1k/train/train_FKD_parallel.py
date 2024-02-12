@@ -27,7 +27,7 @@ class DataLoaderX(DataLoader):
 
 sys.path.append('../')
 from relabel.utils_fkd import ImageFolder_FKD_MIX, ComposeWithCoords, RandomResizedCropWithCoords, \
-    RandomHorizontalFlipWithRes, mix_aug
+    RandomHorizontalFlipWithRes, mix_aug, ShufflePatchesWithIndex
 
 # It is imported for you to access and modify the PyTorch source code (via Ctrl+Click), more details in README.md
 from torch.utils.data._utils.fetch import _MapDatasetFetcher
@@ -95,6 +95,8 @@ def get_args():
                         default='./save/1024', help='path to output dir')
     parser.add_argument('--cos', default=False,
                         action='store_true', help='cosine lr scheduler')
+    parser.add_argument('--st', default=1.5,
+                        type=float, help='the scheduler trick')
     parser.add_argument('--sgd', default=False,
                         action='store_true', help='sgd optimizer')
     parser.add_argument('-lr', '--learning-rate', type=float,
@@ -113,7 +115,8 @@ def get_args():
                         default="0,1", help='the id of gpu used')
     parser.add_argument('--model', type=str,
                         default='resnet18', help='student model name')
-
+    parser.add_argument('--shuffle-patch', default=False, action='store_true',
+                    help='if use shuffle-patch')
     parser.add_argument('--keep-topk', type=int, default=1000,
                         help='keep topk logits for kd loss')
     parser.add_argument('-T', '--temperature', type=float,
@@ -173,12 +176,13 @@ def main_worker(gpu, ngpus_per_node, args):
         args_epoch=args.epochs,
         args_bs=args.batch_size,
         root=args.train_dir,
-        transform=ComposeWithCoords(transforms=[
+        transform=ComposeWithCoords(ap_shuffle=True,transforms=[
+            transforms.ToTensor(),
+            ShufflePatchesWithIndex(factor=2),
             RandomResizedCropWithCoords(size=224,
-                                        scale=(0.08, 1),
+                                        scale=(1/2, 1),
                                         interpolation=InterpolationMode.BILINEAR),
             RandomHorizontalFlipWithRes(),
-            transforms.ToTensor(),
             normalize,
         ]))
 
@@ -223,11 +227,11 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.cos == True:
         scheduler = LambdaLR(optimizer,
                              lambda step: 0.5 * (
-                                     1. + math.cos(math.pi * step / (3*args.epochs/2))) if step <= (3*args.epochs/2) else 0,
+                                     1. + math.cos(math.pi * step / (args.st*args.epochs))) if step <= (args.st*args.epochs) else 0,
                              last_epoch=-1)
     else:
         scheduler = LambdaLR(optimizer,
-                             lambda step: (1.0 - step / (3*args.epochs/2)) if step <= (3*args.epochs/2) else 0, last_epoch=-1)
+                             lambda step: (1.0 - step / (args.st*args.epochs)) if step <= (args.st*args.epochs) else 0, last_epoch=-1)
 
     args.best_acc1 = 0 # 31.4% -> 34.4% (background)
     args.optimizer = optimizer
@@ -243,7 +247,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         train(model, args, epoch, gpu, ngpus_per_node, scaler=grad_scaler)
 
-        if epoch % 10 == 0 or epoch == args.epochs - 1:
+        if epoch % 30 == 0 or epoch == args.epochs - 1:
             top1 = validate(model, args, epoch)
         else:
             top1 = 0
@@ -286,8 +290,8 @@ def train(model, args, epoch=None, gpu=0, ngpus_per_node=1, scaler=None):
     t1 = time.time()
     args.train_loader.dataset.set_epoch(epoch)
     for batch_idx, batch_data in enumerate(args.train_loader):
-        images, target, flip_status, coords_status = batch_data[:4]
-        mix_index, mix_lam, mix_bbox, soft_label = batch_data[4:]
+        images, target, flip_status, coords_status, indices_status = batch_data[:5]
+        mix_index, mix_lam, mix_bbox, soft_label = batch_data[5:]
 
         images = images.cuda()
         target = target.cuda()

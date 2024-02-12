@@ -1,13 +1,13 @@
 CUDA_VISIBLE_DEVICES=1 python generate_soft_label_with_db.py \
-    -b 1024 \
+    -b 100 \
     -j 8 \
     --epochs 300 \
     --fkd-seed 42 \
     --input-size 224 \
-    --min-scale-crops 0.08 \
+    --min-scale-crops 0.5 \
     --max-scale-crops 1 \
-    --use-fp16 --candidate-number 6 \
-    --fkd-path ./FKD_cutmix_fp16_CSDC_b6 \
+    --use-fp16 --candidate-number 5 \
+    --fkd-path ./FKD_cutmix_fp16_CSDC_b5 \
     --mode 'fkd_save' \
     --mix-type 'cutmix' \
-    --data ../recover/syn_data/CSDC_b6_ImageNet_1k_Recover_IPC_10
+    --data ../recover/syn_data/CSDC_b5_ImageNet_1k_Recover_IPC_10

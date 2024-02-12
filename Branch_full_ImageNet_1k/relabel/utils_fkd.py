@@ -1,5 +1,5 @@
 import os
-import torch
+import torch,random
 import torch.distributed
 import torchvision
 from torchvision.transforms import functional as t_F
@@ -17,25 +17,67 @@ class RandomResizedCropWithCoords(torchvision.transforms.RandomResizedCrop):
             reference = False
         if not reference:
             i, j, h, w = self.get_params(img, self.scale, self.ratio)
-            coords = (i / img.size[1],
-                      j / img.size[0],
-                      h / img.size[1],
-                      w / img.size[0])
+            coords = (i / img.shape[2],
+                      j / img.shape[1],
+                      h / img.shape[2],
+                      w / img.shape[1])
             coords = torch.FloatTensor(coords)
         else:
-            i = coords[0].item() * img.size[1]
-            j = coords[1].item() * img.size[0]
-            h = coords[2].item() * img.size[1]
-            w = coords[3].item() * img.size[0]
+            i = round(coords[0].item() * img.shape[2])
+            j = round(coords[1].item() * img.shape[1])
+            h = round(coords[2].item() * img.shape[2])
+            w = round(coords[3].item() * img.shape[1])
         return t_F.resized_crop(img, i, j, h, w, self.size,
-                                self.interpolation), coords
+                                self.interpolation,antialias=True), coords
 
+class ShufflePatchesWithIndex(torch.nn.Module):
+    def shuffle_weight(self, img, factor,indices=None):
+        h, w = img.shape[1:]
+        th, tw = h // factor, w // factor
+        patches = []
+        for i in range(factor):
+            i = i * tw
+            if i != factor - 1:
+                patches.append(img[..., i : i + tw])
+            else:
+                patches.append(img[..., i:])
+        if indices is None:
+            indices = np.random.choice(list(range(len(patches))),len(patches),replace=False)
+        new_patches = []
+        for indice in indices:
+            new_patches.append(patches[indice])
+        img = torch.cat(patches, -1)
+        return img, indices
+
+    def __init__(self, factor):
+        super().__init__()
+        self.factor = factor
+
+    def forward(self, img, indices):
+        try:
+            reference = (indices.any())
+        except:
+            reference = False
+        if not reference:
+            img,indices1 = self.shuffle_weight(img, self.factor)
+            img = img.permute(0, 2, 1)
+            img,indices2 = self.shuffle_weight(img, self.factor)
+            img = img.permute(0, 2, 1)
+            indices = torch.stack([torch.LongTensor(indices1),torch.LongTensor(indices2)],0)
+            return img, indices
+        else:
+            img,indices1 = self.shuffle_weight(img, self.factor, indices[0].cpu().tolist())
+            img = img.permute(0, 2, 1)
+            img,indices2 = self.shuffle_weight(img, self.factor, indices[1].cpu().tolist())
+            img = img.permute(0, 2, 1)
+            return img, indices
 
 class ComposeWithCoords(torchvision.transforms.Compose):
-    def __init__(self, **kwargs):
+    def __init__(self, ap_shuffle=True,**kwargs):
         super(ComposeWithCoords, self).__init__(**kwargs)
+        self.ap_shuffle = ap_shuffle
 
-    def __call__(self, img, coords, status):
+    def __call__(self, img, coords, status, indices):
         for t in self.transforms:
             if type(t).__name__ == 'RandomResizedCropWithCoords':
                 img, coords = t(img, coords)
@@ -43,9 +85,14 @@ class ComposeWithCoords(torchvision.transforms.Compose):
                 img, coords = t(img, coords)
             elif type(t).__name__ == 'RandomHorizontalFlipWithRes':
                 img, status = t(img, status)
+            elif type(t).__name__ == 'ShufflePatchesWithIndex':
+                if self.ap_shuffle:
+                    img, indices = t(img, indices)
+                if indices is None:
+                    indices = torch.zeros(2,2).int()
             else:
                 img = t(img)
-        return img, status, coords
+        return img, status, coords, indices
 
 
 class RandomHorizontalFlipWithRes(torch.nn.Module):
@@ -134,6 +181,7 @@ class ImageFolder_FKD_MIX(torchvision.datasets.ImageFolder):
             path, target = self.samples[index]
             coords_ = None
             flip_ = None
+            indices_ = None
         elif self.mode == 'fkd_load':
             if self.config_list is None:
                 self.load_epoch_config()
@@ -149,6 +197,7 @@ class ImageFolder_FKD_MIX(torchvision.datasets.ImageFolder):
             min_bbox = batch_config[4]
             soft_label = batch_config[5][batch_config_idx]
             new_index = batch_config[6][batch_config_idx]
+            indices_ = batch_config[7][batch_config_idx]
             path, target = self.samples[new_index]
         else:
             raise ValueError('mode should be fkd_save or fkd_load')
@@ -156,19 +205,20 @@ class ImageFolder_FKD_MIX(torchvision.datasets.ImageFolder):
         sample = self.loader(path)
 
         if self.transform is not None:
-            sample_new, flip_status, coords_status = self.transform(sample, coords_, flip_)
+            sample_new, flip_status, coords_status, indices_status = self.transform(sample, coords_, flip_, indices_)
         else:
             sample_new = sample
             flip_status = None
             coords_status = None
+            indices_status = None
 
         if self.target_transform is not None:
             target = self.target_transform(target)
 
         if self.mode == "fkd_save":
-            return sample_new, target, flip_status, coords_status, index
+            return sample_new, target, flip_status, coords_status, indices_status, index
         elif self.mode == "fkd_load":
-            return sample_new, target, flip_status, coords_status, mix_index, mix_lam, min_bbox, soft_label
+            return sample_new, target, flip_status, coords_status, indices_status, mix_index, mix_lam, min_bbox, soft_label
         else:
             raise ValueError('mode should be fkd_save or fkd_load')
 

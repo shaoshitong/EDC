@@ -18,7 +18,7 @@ from torchvision.transforms import InterpolationMode
 
 from tqdm import tqdm
 from utils_fkd import ImageFolder_FKD_MIX, ComposeWithCoords, RandomResizedCropWithCoords, RandomHorizontalFlipWithRes, \
-    mix_aug
+    mix_aug, ShufflePatchesWithIndex
 
 parser = argparse.ArgumentParser(description='FKD Soft Label Generation on ImageNet-1K w/ Mix Augmentation')
 parser.add_argument('--data', metavar='DIR',
@@ -34,6 +34,8 @@ parser.add_argument('--world-size', default=-1, type=int,
                     help='number of nodes for distributed training')
 parser.add_argument('--temperature', default=20, type=float,
                     help='the temperature of FKD')
+parser.add_argument('--shuffle-patch', default=False, action='store_true',
+                    help='if use shuffle-patch')
 parser.add_argument('--rank', default=-1, type=int,
                     help='node rank for distributed training')
 parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
@@ -135,7 +137,7 @@ def main_worker(gpu, ngpus_per_node, args):
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
     aux_teacher =   ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", 
-                   "wide_resnet50_2", "alexnet", "densenet121", "convnext_tiny"][:args.candidate_number]  # "densenet121
+                   "alexnet", "wide_resnet50_2", "densenet121", "convnext_tiny"][:args.candidate_number]  # "densenet121
     print("=> using pytorch pre-trained model '{}'".format(aux_teacher))
     model_teacher = []
     for name in aux_teacher:
@@ -188,16 +190,16 @@ def main_worker(gpu, ngpus_per_node, args):
         mode=args.mode,
         root=args.data,
         seed=args.fkd_seed,
-        transform=ComposeWithCoords(transforms=[
+        transform=ComposeWithCoords(ap_shuffle=False,transforms=[
+            transforms.ToTensor(),
+            ShufflePatchesWithIndex(factor=int(1/args.min_scale_crops)),
             RandomResizedCropWithCoords(size=args.input_size,
                                         scale=(args.min_scale_crops,
                                                args.max_scale_crops),
                                         interpolation=InterpolationMode.BILINEAR),
-            RandomHorizontalFlipWithRes(),
-            transforms.ToTensor(),
-            normalize,
+            RandomHorizontalFlipWithRes(),            normalize,
         ]))
-
+    
     generator = torch.Generator()
     generator.manual_seed(args.fkd_seed)
     sampler = torch.utils.data.RandomSampler(train_dataset, generator=generator)
@@ -242,10 +244,7 @@ def save(train_loader, model, dir_path, args):
     for _model in model:
         _model.eval()
     total_acc = 0.
-    for batch_idx, (images, target, flip_status, coords_status, index) in enumerate(train_loader):
-        # print(images.shape) # [batch_size, 3, 224, 224]
-        # print(flip_status.shape) # [batch_size,]
-        # print(coords_status.shape) # [batch_size, 4]
+    for batch_idx, (images, target, flip_status, coords_status, indices_status, index) in enumerate(train_loader):
         images = images.cuda()
         split_point = int(images.shape[0] // 2)
         images, mix_index, mix_lam, mix_bbox = mix_aug(images, args)
@@ -267,7 +266,7 @@ def save(train_loader, model, dir_path, args):
         total_acc += acc
         if args.use_fp16:
             output = output.half()
-        batch_config = [coords_status, flip_status, mix_index, mix_lam, mix_bbox, output.cpu(), index]
+        batch_config = [coords_status, flip_status, mix_index, mix_lam, mix_bbox, output.cpu(), index, indices_status]
         batch_config_path = os.path.join(dir_path, 'batch_{}.tar'.format(batch_idx))
         torch.save(batch_config, batch_config_path)
     print("Top 1-Acc.:", round(total_acc.item() / len(train_loader) * 100, 3))
