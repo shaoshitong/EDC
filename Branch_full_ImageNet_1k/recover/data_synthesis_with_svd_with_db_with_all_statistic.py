@@ -26,8 +26,7 @@ mp.set_sharing_strategy('file_system')
 from utils import *
 
 def shift_list(lst, shift_count):
-    new_lst = [i for i in range(shift_count,len(lst))]
-    shift_count %= len(lst)
+    new_lst = [i for i in range(shift_count,len(lst),1)]
     for i in range(shift_count):
         new_lst.append(i)
     return new_lst
@@ -202,10 +201,11 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                                         torch.softmax(ema_sub_outputs / 4, dim=1))
             else:
                 loss_ema_ce = torch.Tensor([0.]).to(inputs_jit.device)
-            if args.closeness and (counter >= (args.iteration // 10)):
+            if args.closeness and (counter >= 1000): # (args.iteration // 10)
                 with torch.no_grad():
-                    idxs = shift_list(backbone_ema_dict,id+1)
+                    idxs = shift_list(backbone_ema_dict,id)
                     begins = range(len(backbone_ema_dict)-1,0,-1)
+                    print(idxs)
                     differential = []
                     for begin in begins:
                         differential.append(backbone_ema_dict[idxs[begin-1]].value - args.ema_alpha*(backbone_ema_dict[idxs[begin]].value - backbone_ema_dict[idxs[begin-1]].value)/(1-args.ema_alpha))
@@ -269,11 +269,11 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                     args.average_grad_ratio) * grad
             optimizer.step()
 
-            with torch.no_grad(): # 0^^ 1^ 2^ 3^ 0^^ 1^^ 2^ 3^
+            with torch.no_grad(): # 0^ 1^ 2 3 0^ 1^ 2^ 3^
                 inputs_ema.ema_update(inputs)
                 backbone_ema_dict[id].ema_update(inputs)
-                backbone_ema_dict_tmp[(id+len(args.aux_teacher)-1)%len(args.aux_teacher)].value = \
-                    backbone_ema_dict[(id+len(args.aux_teacher)-1)%len(args.aux_teacher)].value
+                backbone_ema_dict_tmp[(id+len(args.aux_teacher)-2)%len(args.aux_teacher)].value = \
+                    backbone_ema_dict[(id+len(args.aux_teacher)-2)%len(args.aux_teacher)].value
             
             # clip color outlayers
             inputs.data = clip(inputs.data)
@@ -349,7 +349,7 @@ def main_syn():
                         help='encourage the closeness or not')
     parser.add_argument('--closeness-weight', type=float, default=0.25,
                         help='the weight of closeness weight')
-    parser.add_argument('--ema_alpha', type=float, default=0.99,
+    parser.add_argument('--ema_alpha', type=float, default=0.9,
                         help='the weight of EMA learning rate')
     parser.add_argument('--exp-name', type=str, default='test',
                         help='name of the experiment, subfolder under syn_data_path')
