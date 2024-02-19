@@ -1,11 +1,6 @@
-# CUDA_VISIBLE_DEVICES=0 python data_synthesis_without_optim.py \
-#     --exp-name "WO_OPTIM_ImageNet_1k_Recover_IPC_10" \
-#     --ipc-number 10 \
-#     --train-data-path /path/to/imagenet-1k/train --gpu-id 0
-
-CUDA_VISIBLE_DEVICES=1,4,5,6 python data_synthesis_with_svd_with_db_with_all_statistic.py \
+CUDA_VISIBLE_DEVICES=1,4,5,6 python closeness.py \
     --arch-name "resnet18" \
-    --exp-name "CSDC_b5_ImageNet_1k_Recover_IPC_10" \
+    --exp-name "CSDC_b5_closeness_IPC_10" \
     --batch-size 80 \
     --lr 0.05 \
     --ipc-number 10 --training-momentum 0.8 --closeness \

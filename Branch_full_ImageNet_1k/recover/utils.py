@@ -6,6 +6,7 @@ import numpy as np
 import torch.nn.functional as F
 import os, sys, random
 import einops
+import copy
 import torch.distributed as dist
 
 
@@ -338,3 +339,60 @@ class PreImgPathCache(ImageFolder):
         if self.transform is not None:
             sample = self.transform(sample)
         return sample
+
+class GenerateGaussianDisturb():
+    def __init__(self,model,mean_std=[0,0.05]):
+        self.model = copy.deepcopy(model)
+        self.ws = copy.deepcopy(self.model.state_dict())
+        self.mean = mean_std[0]
+        self.std = mean_std[1]
+    
+    @torch.no_grad()
+    def generate_disturb_parameters(self, new_model,mean_std=None):
+        if mean_std is not None:
+            self.mean, self.std = mean_std
+        new_model_named_parameters = dict(new_model.named_parameters())
+        self._normalized_gaussian_noise()
+        for name, param in self.model.named_parameters():
+            m = (torch.randn(1)*self.std + self.mean).abs().item()
+            new_model_named_parameters[name].data = param.data + m * self.x[name]
+
+    @torch.no_grad()
+    def _normalized_gaussian_noise(self):
+        self.x = self._find_direction(self.model)
+        self.x = self._normalize_filter(self.x, self.ws)
+        self.x = self._ignore_bn(self.x)
+
+    @torch.no_grad()
+    def _find_direction(self, model):
+        x = {}
+        for name, param in model.named_parameters():
+            x[name] = torch.randn_like(param.data)
+        return x
+
+    @torch.no_grad()
+    def _normalize_filter(self, bs, ws):
+        # TODO: normalize
+        bs = {k: v.float() for k, v in bs.items()}
+        ws = {k: v.float() for k, v in ws.items()}
+        norm_bs = {}
+        for k in bs:
+            ws_norm = torch.norm(ws[k], dim=0, keepdim=True)
+            bs_norm = torch.norm(bs[k], dim=0, keepdim=True)
+            norm_bs[k] = ws_norm / (bs_norm + 1e-7) * bs[k]  # random * true_norm / rand_norm
+        return norm_bs
+
+    @torch.no_grad()
+    def _ignore_bn(self, ws):
+        ignored_ws = {}
+        for k in ws:
+            if len(ws[k].size()) < 2:
+                ignored_ws[k] = torch.zeros(size=ws[k].size(), device=ws[k].device)
+            else:
+                ignored_ws[k] = ws[k]
+        return ignored_ws
+    
+
+def noise_schedule(niter,titer,sigma_max,sigma_min=0,rho=7):
+    nsigma = sigma_max ** (1/rho) + (niter/titer) * (sigma_min ** (1/rho) - sigma_max ** (1/rho))
+    return nsigma ** (rho)

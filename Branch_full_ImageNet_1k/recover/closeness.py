@@ -24,12 +24,59 @@ import multiprocessing
 import torch.distributed as dist
 mp.set_sharing_strategy('file_system')
 from utils import *
+from scipy import stats as st
+
+@staticmethod
+def gkern(kernlen=15, nsig=3):
+    """Returns a 2D Gaussian kernel array."""
+    x = np.linspace(-nsig, nsig, kernlen)
+    kern1d = st.norm.pdf(x)
+    kernel_raw = np.outer(kern1d, kern1d)
+    kernel = kernel_raw / kernel_raw.sum()
+    kernel = torch.tensor(kernel, dtype=torch.float)
+    conv = nn.Conv2d(3, 3, kernel_size=kernlen, stride=1, padding=kernlen // 2, bias=False, groups=3)
+    kernel = kernel.repeat(3, 1, 1).view(3, 1, kernlen, kernlen)
+    conv.weight.data = kernel
+    return conv
 
 def shift_list(lst, shift_count):
     new_lst = [i for i in range(shift_count,len(lst),1)]
     for i in range(shift_count):
         new_lst.append(i)
     return new_lst
+
+def get_optimum_points(args,inputs,targets,loss_r_feature_layers,model_teacher,criterion):
+    optimum_points = []
+    lim_0, lim_1 = args.jitter, args.jitter
+    for id in range(len(args.aux_teacher)):
+        _inputs = inputs.clone().detach()
+        _inputs.requires_grad_(True)
+        suboptimizer = optim.Adam([_inputs], lr=args.lr, betas=[0.5, 0.9], eps=1e-8)
+        for _iteration in range(100):
+            suboptimizer.zero_grad()
+            aug_function = transforms.Compose([
+                        transforms.RandomResizedCrop(224),
+                        transforms.RandomHorizontalFlip(),
+                    ])
+            inputs_jit = aug_function(_inputs)
+            off1 = random.randint(0, lim_0)
+            off2 = random.randint(0, lim_1)
+            inputs_jit = torch.roll(inputs_jit, shifts=(off1, off2), dims=(2, 3))
+
+            for (idx, mod) in enumerate(loss_r_feature_layers[id]):
+                mod.set_ori(flatness=args.flatness)
+            sub_outputs = model_teacher[id](inputs_jit)
+            loss_ce = criterion(sub_outputs, targets)
+            rescale = [args.first_multiplier] + [1. for _ in range(len(loss_r_feature_layers[id]) - 1)]
+            loss_r_feature = sum([mod.r_feature * rescale[idx] for (idx, mod) in enumerate(loss_r_feature_layers[id])])
+            loss = loss_ce + args.r_loss * loss_r_feature
+            if _iteration % 25 == 0:
+                print("loss",loss.item())
+            loss.backward()
+            suboptimizer.step()
+        optimum_points.append(_inputs.clone().detach())
+        print(f"Closeness Finish {id}")
+    return optimum_points
 
 def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id_range):
     args.gpu = gpu
@@ -44,6 +91,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
     for _model_teacher in model_teacher:
         for p in _model_teacher.parameters():
             p.requires_grad = False
+
     model_verifier = model_verifier.cuda(gpu)
     model_verifier.eval()
     for p in model_verifier.parameters():
@@ -128,6 +176,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
     turn_index = torch.LongTensor(np.arange(total_number)).view(len(ipc_id_range), 1000) \
         .transpose(1, 0).contiguous().view(-1)
 
+    ggs = [GenerateGaussianDisturb(_model_teacher) for _model_teacher in model_teacher]
     counter = 0
     for zz in range(0, total_number, batch_size):  # 9900 - 10000
         sub_turn_index = turn_index[zz + gpu * sub_batch_size:min(zz + (gpu + 1) * sub_batch_size, total_number)]
@@ -153,13 +202,10 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
         lr_scheduler = lr_cosine_policy(args.lr, 0, iterations_per_layer)  # 0 - do not use warmup
         criterion = nn.CrossEntropyLoss()
         criterion = criterion.cuda()
-
         inputs_ema = EMA(alpha=args.ema_alpha, initial_value=inputs)
-        backbone_ema_dict = [EMA(alpha=args.ema_alpha, initial_value=inputs) for model_name in args.aux_teacher]
-        backbone_ema_dict_tmp = [EMA(alpha=args.ema_alpha, initial_value=inputs) for model_name in args.aux_teacher]
         cosine_similarity_cache = []
-
         for iteration in range(iterations_per_layer):
+
             # learning rate scheduling
             lr_scheduler(optimizer, iteration, iteration)
 
@@ -171,14 +217,15 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
             inputs_ema_jit = aug_function(inputs_ema.value)
 
             # apply random jitter offsets
-            # off1 = random.randint(0, lim_0)
-            # off2 = random.randint(0, lim_1)
-            # inputs_jit = torch.roll(inputs_jit, shifts=(off1, off2), dims=(2, 3))
-            # inputs_ema_jit = torch.roll(inputs_ema_jit, shifts=(off1, off2), dims=(2, 3))
+            off1 = random.randint(0, int(noise_schedule(iteration,iterations_per_layer,lim_0)))
+            off2 = random.randint(0, int(noise_schedule(iteration,iterations_per_layer,lim_1)))
+            inputs_jit = torch.roll(inputs_jit, shifts=(off1, off2), dims=(2, 3))
+            inputs_ema_jit = torch.roll(inputs_ema_jit, shifts=(off1, off2), dims=(2, 3))
 
             # forward pass
             optimizer.zero_grad()
             id = counter % len(model_teacher)
+            ggs[id].generate_disturb_parameters(model_teacher[id],mean_std=[0,noise_schedule(iteration,iterations_per_layer,0.2)])
             counter += 1
             if args.flatness:
                 with torch.no_grad():
@@ -202,25 +249,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                                         torch.softmax(ema_sub_outputs / 4, dim=1))
             else:
                 loss_ema_ce = torch.Tensor([0.]).to(inputs_jit.device)
-            if args.closeness and (iteration >= (args.iteration // 20)): # (args.iteration // 10)
-                with torch.no_grad():
-                    idxs = shift_list(backbone_ema_dict,id)
-                    begins = range(len(backbone_ema_dict)-1,0,-1)
-                    differential = []
-                    # for begin in begins:
-                    #     differential.append(backbone_ema_dict[idxs[begin-1]].value - args.ema_alpha*(backbone_ema_dict[idxs[begin]].value - backbone_ema_dict[idxs[begin-1]].value)/(1-args.ema_alpha))
-                    # differential.append(backbone_ema_dict[idxs[-1]].value - args.ema_alpha*(backbone_ema_dict[idxs[0]].value-backbone_ema_dict_tmp[idxs[-1]].value)/(1-args.ema_alpha))
-                    
-                    for begin in begins:
-                        differential.append(inputs - args.ema_alpha*(backbone_ema_dict[idxs[begin]].value - backbone_ema_dict[idxs[begin-1]].value)/(1-args.ema_alpha))
-                    differential.append(inputs - args.ema_alpha*(backbone_ema_dict[idxs[0]].value-backbone_ema_dict_tmp[idxs[-1]].value)/(1-args.ema_alpha))
-                
-                loss_closeness = 0
-                for _differential in differential:
-                    loss_closeness +=  (1/len(backbone_ema_dict)) * F.mse_loss(inputs, _differential)
-            else:
-                loss_closeness = torch.Tensor([0.]).to(inputs_jit.device)
-
+            
             # Nuclear losses
             adaptivepool = nn.AdaptiveAvgPool2d((32, 32))
             re_inputs_jit = adaptivepool(inputs_jit).reshape(inputs_jit.shape[0], -1)
@@ -249,7 +278,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
             loss_aux = args.nuc_norm * nuc_norm + \
                        args.r_loss * loss_r_feature
 
-            loss = loss_ce + loss_aux + loss_ema_ce * args.flatness_weight + loss_closeness * args.closeness_weight
+            loss = loss_ce + loss_aux + loss_ema_ce * args.flatness_weight
 
             if iteration % save_every == 0 and args.gpu == 0:
                 print("------------iteration {}----------".format(iteration))
@@ -257,7 +286,6 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                 print("nuc norm loss", (args.nuc_norm * nuc_norm).item())
                 print("loss_r_feature", loss_r_feature.item())
                 print("loss_ema_ce", loss_ema_ce.item())
-                print("loss_closeness", loss_closeness.item())
                 print("main criterion",
                       criterion(sub_outputs, targets).item())
                 # comment below line can speed up the training (no validation process)
@@ -266,12 +294,12 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
 
             # do image update
             loss.backward()
-            if args.average_grad_ratio > 0:
-                grad = inputs_jit.grad.mean(0)
-                grad = dist.all_reduce(grad, async_op=True) / ngpus_per_node
-                inputs_jit.grad = (1 - args.average_grad_ratio) * inputs_jit.grad + (
-                    args.average_grad_ratio) * grad
-                
+            # with torch.no_grad():
+            #     # grad = F.adaptive_avg_pool2d(inputs.grad,[64,64])
+            #     # grad = F.interpolate(grad,[inputs.grad.shape[2],inputs.grad.shape[3]],mode="nearest")
+            #     # grad_ema.ema_update(grad)
+            #     inputs.grad = gaussian_kernel(inputs.grad)
+            
             with torch.no_grad():
                 _grad = inputs.grad.view(-1)
                 cosine_similarity_cache.append(_grad/torch.sqrt((_grad**2).sum()))
@@ -285,22 +313,13 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                         print("cosine_similarity", cosine_similarity_value)
                 # inputs.grad = inputs.grad/inputs.grad.norm()
             optimizer.step()
-
-            with torch.no_grad(): # 0^ 1^ 2 3 0^ 1^ 2^ 3^
-                inputs_ema.ema_update(inputs)
-                backbone_ema_dict[id].ema_update(inputs)
-                backbone_ema_dict_tmp[(id+len(args.aux_teacher)-2)%len(args.aux_teacher)].value = \
-                    backbone_ema_dict[(id+len(args.aux_teacher)-2)%len(args.aux_teacher)].value
-            
             # clip color outlayers
             inputs.data = clip(inputs.data)
             if gpu == 0 and (best_cost > loss.item() or iteration == 1):
                 best_inputs = inputs.data.clone()
 
         del inputs_ema
-        del backbone_ema_dict
-        del backbone_ema_dict_tmp
-
+        
         if args.store_best_images:
             best_inputs = inputs.data.clone()  # using multicrop, save the last one
             best_inputs = denormalize(best_inputs)
@@ -364,7 +383,7 @@ def main_syn():
                         help='the weight of flatness weight')
     parser.add_argument('--closeness', action='store_true', default=False,
                         help='encourage the closeness or not')
-    parser.add_argument('--closeness-weight', type=float, default=25,
+    parser.add_argument('--closeness-weight', type=float, default=1.,
                         help='the weight of closeness weight')
     parser.add_argument('--ema_alpha', type=float, default=0.9,
                         help='the weight of EMA learning rate')

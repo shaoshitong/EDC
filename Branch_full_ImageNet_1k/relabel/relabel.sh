@@ -7,7 +7,7 @@ CUDA_VISIBLE_DEVICES=1 python generate_soft_label_with_db.py \
     --min-scale-crops 0.5 \
     --max-scale-crops 1 \
     --use-fp16 --candidate-number 5 \
-    --fkd-path ./FKD_cutmix_fp16_CSDC_b5 \
+    --fkd-path ./FKD_CSDC_b5_closeness2_IPC_10 \
     --mode 'fkd_save' \
     --mix-type 'cutmix' \
-    --data ../recover/syn_data/CSDC_b5_ImageNet_1k_Recover_IPC_10
+    --data ../recover/syn_data/CSDC_b5_closeness_IPC_10
