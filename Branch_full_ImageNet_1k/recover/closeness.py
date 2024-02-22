@@ -59,19 +59,12 @@ def get_optimum_points(args,inputs,targets,loss_r_feature_layers,model_teacher,c
                         transforms.RandomHorizontalFlip(),
                     ])
             inputs_jit = aug_function(_inputs)
-            off1 = random.randint(0, lim_0)
-            off2 = random.randint(0, lim_1)
-            inputs_jit = torch.roll(inputs_jit, shifts=(off1, off2), dims=(2, 3))
-
-            for (idx, mod) in enumerate(loss_r_feature_layers[id]):
-                mod.set_ori(flatness=args.flatness)
             sub_outputs = model_teacher[id](inputs_jit)
             loss_ce = criterion(sub_outputs, targets)
             rescale = [args.first_multiplier] + [1. for _ in range(len(loss_r_feature_layers[id]) - 1)]
             loss_r_feature = sum([mod.r_feature * rescale[idx] for (idx, mod) in enumerate(loss_r_feature_layers[id])])
             loss = loss_ce + args.r_loss * loss_r_feature
-            if _iteration % 25 == 0:
-                print("loss",loss.item())
+            print(f"it{_iteration} loss",loss.item())
             loss.backward()
             suboptimizer.step()
         optimum_points.append(_inputs.clone().detach())
@@ -101,21 +94,27 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
     save_every = 20
     batch_size = args.batch_size
     best_cost = 1e4
-    load_tag_dict = [False for i in range(len(model_teacher))]
+    load_tag_dict = [True for i in range(len(model_teacher))]
     loss_r_feature_layers = [[] for _ in range(len(model_teacher))]
     load_tag = True
 
     for i, (_model_teacher) in enumerate(model_teacher):
         for name, module in _model_teacher.named_modules():
+            if args.aux_teacher[i] in ["wide_resnet50_2", "regnet_y_400mf", "regnet_x_400mf"]:
+                full_name = str(_model_teacher.__class__.__name__) + "_" + str(args.aux_teacher[i]) + "=" + name
+            else:
+                full_name = str(_model_teacher.__class__.__name__) + "=" + name
             if isinstance(module, nn.BatchNorm2d):
-                loss_r_feature_layers[i].append(BNFeatureHook(module,
-                                                              training_momentum=args.training_momentum,
-                                                              flatness_weight=args.flatness_weight))
+                _hook_module = BNFeatureHook(module,save_path=args.statistic_path,
+                                            name=full_name,
+                                            gpu=gpu,training_momentum=args.training_momentum,
+                                            flatness_weight=args.flatness_weight)
+                _hook_module.set_hook(pre=True)
+                load_tag = load_tag & _hook_module.load_tag
+                load_tag_dict[i] = load_tag_dict[i] & _hook_module.load_tag
+                loss_r_feature_layers[i].append(_hook_module)
+
             elif isinstance(module, nn.Conv2d):
-                if args.aux_teacher[i] in ["wide_resnet50_2", "regnet_y_400mf", "regnet_x_400mf"]:
-                    full_name = str(_model_teacher.__class__.__name__) + "_" + str(args.aux_teacher[i]) + "=" + name
-                else:
-                    full_name = str(_model_teacher.__class__.__name__) + "=" + name
                 _hook_module = ConvFeatureHook(module, save_path=args.statistic_path,
                                                name=full_name,
                                                gpu=gpu, training_momentum=args.training_momentum,
@@ -123,7 +122,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                                                flatness_weight=args.flatness_weight)
                 _hook_module.set_hook(pre=True)
                 load_tag = load_tag & _hook_module.load_tag
-                load_tag_dict[i] = _hook_module.load_tag
+                load_tag_dict[i] = load_tag_dict[i] & _hook_module.load_tag
                 loss_r_feature_layers[i].append(_hook_module)
 
     sub_batch_size = int(batch_size // ngpus_per_node)
@@ -133,7 +132,9 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                                                              transforms.RandomHorizontalFlip(),
                                                              transforms.ToTensor(),
                                                              transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                                                                  std=[0.229, 0.224, 0.225])]))
+                                                                                  std=[0.229, 0.224, 0.225]),
+                                                             ShufflePatches(2)],
+                                                             ))
     if not load_tag:
         train_dataset = torchvision.datasets.ImageFolder(root=args.train_data_path,
                                                          transform=transforms.Compose([
@@ -153,12 +154,15 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
             for j, _model_teacher in enumerate(model_teacher):
                 if not load_tag_dict[j]:
                     print(f"conduct backbone {args.aux_teacher[j]} statistics")
-                    for i, (data, _) in tqdm(enumerate(train_loader)):
+                    for i, (data, targets) in tqdm(enumerate(train_loader)):
                         data = data.cuda(gpu)
+                        targets = targets.cuda(gpu)
+                        for _loss_t_feature_layer in loss_r_feature_layers[j]:
+                            _loss_t_feature_layer.set_label(targets)
                         _ = _model_teacher(data)
+                    
                     for _loss_t_feature_layer in loss_r_feature_layers[j]:
-                        if isinstance(_loss_t_feature_layer, ConvFeatureHook):
-                            _loss_t_feature_layer.save()
+                        _loss_t_feature_layer.save()
 
         print("Training Statistic Information Is Successfully Saved")
     else:
@@ -166,8 +170,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
 
     for j in range(len(loss_r_feature_layers)):
         for _loss_t_feature_layer in loss_r_feature_layers[j]:
-            if isinstance(_loss_t_feature_layer, ConvFeatureHook):
-                _loss_t_feature_layer.set_hook(pre=False)
+            _loss_t_feature_layer.set_hook(pre=False)
 
     targets_all_all = torch.LongTensor(np.arange(1000))[None, ...].expand(len(ipc_id_range), 1000).contiguous().view(-1)
     ipc_id_all = torch.LongTensor(ipc_id_range)[..., None].expand(len(ipc_id_range), 1000).contiguous().view(-1)
@@ -176,7 +179,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
     turn_index = torch.LongTensor(np.arange(total_number)).view(len(ipc_id_range), 1000) \
         .transpose(1, 0).contiguous().view(-1)
 
-    ggs = [GenerateGaussianDisturb(_model_teacher) for _model_teacher in model_teacher]
+    # ggs = [GenerateGaussianDisturb(_model_teacher) for _model_teacher in model_teacher]
     counter = 0
     for zz in range(0, total_number, batch_size):  # 9900 - 10000
         sub_turn_index = turn_index[zz + gpu * sub_batch_size:min(zz + (gpu + 1) * sub_batch_size, total_number)]
@@ -202,10 +205,23 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
         lr_scheduler = lr_cosine_policy(args.lr, 0, iterations_per_layer)  # 0 - do not use warmup
         criterion = nn.CrossEntropyLoss()
         criterion = criterion.cuda()
+        optimum_points = []
         inputs_ema = EMA(alpha=args.ema_alpha, initial_value=inputs)
         cosine_similarity_cache = []
-        for iteration in range(iterations_per_layer):
+        dynamic_momentum = 0.
+        with torch.no_grad():
+            true_dist = torch.zeros(inputs.shape[0],1000).to(inputs.device)
+            true_dist.fill_(0.1 / (1000 - 1))
+            true_dist.scatter_(1, targets.unsqueeze(1), 0.9)
+            true_dist = true_dist + (torch.rand_like(true_dist) * 0.1 / (1000 - 1) - 0.05 / (1000 - 1))
+            true_dist = true_dist.abs()
 
+        for iteration in range(iterations_per_layer):
+            if args.closeness and (iteration in [2500]):
+                optimum_points = get_optimum_points(args,inputs,targets,loss_r_feature_layers,model_teacher,criterion)
+                inputs = torch.stack(optimum_points,0).mean(0)
+                inputs.requires_grad_(True)
+                optimizer = optim.Adam([inputs], lr=args.lr, betas=[0.5, 0.9], eps=1e-8)
             # learning rate scheduling
             lr_scheduler(optimizer, iteration, iteration)
 
@@ -216,17 +232,14 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
             inputs_jit = aug_function(inputs)
             inputs_ema_jit = aug_function(inputs_ema.value)
 
-            # apply random jitter offsets
-            off1 = random.randint(0, int(noise_schedule(iteration,iterations_per_layer,lim_0)))
-            off2 = random.randint(0, int(noise_schedule(iteration,iterations_per_layer,lim_1)))
-            inputs_jit = torch.roll(inputs_jit, shifts=(off1, off2), dims=(2, 3))
-            inputs_ema_jit = torch.roll(inputs_ema_jit, shifts=(off1, off2), dims=(2, 3))
-
             # forward pass
-            optimizer.zero_grad()
             id = counter % len(model_teacher)
-            ggs[id].generate_disturb_parameters(model_teacher[id],mean_std=[0,noise_schedule(iteration,iterations_per_layer,0.2)])
+            for mod in loss_r_feature_layers[id]:
+                mod.set_label(targets)
+            
+            # ggs[id].generate_disturb_parameters(model_teacher[id],mean_std=[0,noise_schedule(iteration,iterations_per_layer,0.2)])
             counter += 1
+            optimizer.zero_grad()
             if args.flatness:
                 with torch.no_grad():
                     for (idx, mod) in enumerate(loss_r_feature_layers[id]):
@@ -235,7 +248,6 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
             for (idx, mod) in enumerate(loss_r_feature_layers[id]):
                 mod.set_ori(flatness=args.flatness)
             sub_outputs = model_teacher[id](inputs_jit)
-
             # R_cross classification loss
             loss_ce = criterion(sub_outputs, targets)
 
@@ -293,13 +305,8 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                     hook_for_display(inputs, targets)
 
             # do image update
-            loss.backward()
-            # with torch.no_grad():
-            #     # grad = F.adaptive_avg_pool2d(inputs.grad,[64,64])
-            #     # grad = F.interpolate(grad,[inputs.grad.shape[2],inputs.grad.shape[3]],mode="nearest")
-            #     # grad_ema.ema_update(grad)
-            #     inputs.grad = gaussian_kernel(inputs.grad)
-            
+            (loss).backward()
+
             with torch.no_grad():
                 _grad = inputs.grad.view(-1)
                 cosine_similarity_cache.append(_grad/torch.sqrt((_grad**2).sum()))
@@ -311,7 +318,6 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                         cosine_similarity_value.shape[0]*cosine_similarity_value.shape[0]-cosine_similarity_value.shape[0])
                     if iteration % save_every == 0 and args.gpu == 0:
                         print("cosine_similarity", cosine_similarity_value)
-                # inputs.grad = inputs.grad/inputs.grad.norm()
             optimizer.step()
             # clip color outlayers
             inputs.data = clip(inputs.data)
@@ -443,7 +449,7 @@ def main_syn():
     if not os.path.exists(args.syn_data_path):
         os.makedirs(args.syn_data_path)
 
-    aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", "alexnet"] # "densenet121", "convnext_tiny"
+    aux_teacher = ["resnet18","mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", "alexnet"] #  "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", "alexnet" "densenet121", "convnext_tiny"
     args.aux_teacher = aux_teacher
     model_teacher = []
     for name in aux_teacher:

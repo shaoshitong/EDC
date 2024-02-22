@@ -189,6 +189,13 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                 mod.set_ori(flatness=args.flatness)
             sub_outputs = model_teacher[id](inputs_jit)
 
+            with torch.no_grad():
+                true_dist = torch.zeros_like(sub_outputs)
+                true_dist.fill_(0.1 / (1000 - 1))
+                true_dist.scatter_(1, targets.unsqueeze(1), 0.9)
+                true_dist = true_dist + (torch.rand_like(true_dist) * 0.1 / (1000 - 1) - 0.05 / (1000 - 1))
+                true_dist = true_dist.abs()
+
             # R_cross classification loss
             loss_ce = criterion(sub_outputs, targets)
 
@@ -207,9 +214,6 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                     idxs = shift_list(backbone_ema_dict,id)
                     begins = range(len(backbone_ema_dict)-1,0,-1)
                     differential = []
-                    # for begin in begins:
-                    #     differential.append(backbone_ema_dict[idxs[begin-1]].value - args.ema_alpha*(backbone_ema_dict[idxs[begin]].value - backbone_ema_dict[idxs[begin-1]].value)/(1-args.ema_alpha))
-                    # differential.append(backbone_ema_dict[idxs[-1]].value - args.ema_alpha*(backbone_ema_dict[idxs[0]].value-backbone_ema_dict_tmp[idxs[-1]].value)/(1-args.ema_alpha))
                     
                     for begin in begins:
                         differential.append(inputs - args.ema_alpha*(backbone_ema_dict[idxs[begin]].value - backbone_ema_dict[idxs[begin-1]].value)/(1-args.ema_alpha))

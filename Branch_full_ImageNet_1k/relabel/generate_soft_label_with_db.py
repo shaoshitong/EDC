@@ -136,8 +136,8 @@ def main_worker(gpu, ngpus_per_node, args):
             args.rank = args.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
-    aux_teacher =   ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", 
-                   "alexnet", "wide_resnet50_2", "densenet121", "convnext_tiny"][:args.candidate_number]  # "densenet121
+    aux_teacher =   ["resnet18", "mobilenet_v2", "shufflenet_v2_x0_5", "alexnet", 
+                     "efficientnet_b0","wide_resnet50_2", "densenet121", "convnext_tiny"][:args.candidate_number]  # "densenet121
     print("=> using pytorch pre-trained model '{}'".format(aux_teacher))
     model_teacher = []
     for name in aux_teacher:
