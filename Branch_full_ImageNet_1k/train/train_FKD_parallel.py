@@ -7,6 +7,7 @@ import argparse
 import numpy as np
 import wandb
 import timm
+from copy import deepcopy
 import torch.distributed as dist
 
 import torch.nn.functional as F
@@ -71,6 +72,47 @@ class DISTLoss(nn.Module):
 
         return loss_kd
 
+class EMAMODEL(object):
+    def __init__(self,model):
+        self.ema_model = deepcopy(model)
+        for parameter in self.ema_model.parameters():
+            parameter.requires_grad_(False)
+        self.ema_model.eval()
+
+    @torch.no_grad()
+    def ema_step(self,decay_rate=0.999,model=None):
+        for param,ema_param in zip(model.parameters(),self.ema_model.parameters()):
+            ema_param.data.mul_(decay_rate).add_(param.data, alpha=1. - decay_rate)
+    
+    @torch.no_grad()
+    def ema_swap(self,model=None):
+        # print('Begin swap',list(self.ema_model.parameters())[0].data[0,0],list(model.parameters())[0].data[0,0])
+        for param,ema_param in zip(self.ema_model.parameters(),model.parameters()):
+            tmp = param.data.detach()
+            param.data = ema_param.detach()
+            ema_param.data = tmp
+        # print('After swap',list(self.ema_model.parameters())[0].data[0,0],list(model.parameters())[0].data[0,0])
+    
+    @torch.no_grad()
+    def __call__(self, pre_z_t,t):
+        return self.ema_model.module(pre_z_t,t)
+
+class ALRS():
+    def __init__(self, optimizer, decay_rate=0.95):
+        self.optimizer = optimizer
+        self.decay_rate = decay_rate
+        self.prev_loss = 1e3
+
+    def step(self, now_loss):
+        delta = abs(self.prev_loss - now_loss)
+        if delta / now_loss < 0.02 and delta < 0.02:
+                self.optimizer.param_groups[0]["lr"] *= self.decay_rate
+        self.p_lr = p_lr = self.optimizer.param_groups[0]["lr"]
+        self.prev_loss = now_loss
+        print(f"call auto learning rate scheduler, the learning rate is set as {p_lr}, the current loss is {now_loss}")
+
+    def get_last_lr(self):
+        return [self.p_lr]
 
 def get_args():
     parser = argparse.ArgumentParser("FKD Training on ImageNet-1K")
@@ -93,8 +135,12 @@ def get_args():
                         default='/path/to/imagenet/val', help='path to validation dataset')
     parser.add_argument('--output-dir', type=str,
                         default='./save/1024', help='path to output dir')
-    parser.add_argument('--cos', default=False,
-                        action='store_true', help='cosine lr scheduler')
+    parser.add_argument('--ls-type', default="cos",
+                        type=str, help='the type of lr scheduler')
+    parser.add_argument('--alrs-dr', default=0.9975,
+                        type=float, help='the decay rate of ALRS')
+    parser.add_argument('--ema-dr', default=0.999,
+                        type=float, help='the decay rate of EMA')
     parser.add_argument('--st', default=1.5,
                         type=float, help='the scheduler trick')
     parser.add_argument('--sgd', default=False,
@@ -213,6 +259,7 @@ def main_worker(gpu, ngpus_per_node, args):
     torch.cuda.set_device(gpu)
     model = DDP(model.cuda(gpu), device_ids=[gpu], output_device=gpu)
     model.train()
+    ema_model = EMAMODEL(model)
 
     if args.sgd:
         optimizer = torch.optim.SGD(get_parameters(model),
@@ -224,11 +271,13 @@ def main_worker(gpu, ngpus_per_node, args):
                                       lr=args.adamw_lr,
                                       weight_decay=args.adamw_weight_decay)
 
-    if args.cos == True:
+    if args.ls_type == "cos":
         scheduler = LambdaLR(optimizer,
                              lambda step: 0.5 * (
                                      1. + math.cos(math.pi * step / (args.st*args.epochs))) if step <= (args.st*args.epochs) else 0,
                              last_epoch=-1)
+    if args.ls_type == "alrs":
+        scheduler = ALRS(optimizer,decay_rate=args.alrs_dr)
     else:
         scheduler = LambdaLR(optimizer,
                              lambda step: (1.0 - step / (args.st*args.epochs)) if step <= (args.st*args.epochs) else 0, last_epoch=-1)
@@ -245,16 +294,21 @@ def main_worker(gpu, ngpus_per_node, args):
         global wandb_metrics
         wandb_metrics = {}
 
-        train(model, args, epoch, gpu, ngpus_per_node, scaler=grad_scaler)
+        now_loss = train(model, args, epoch, gpu, ngpus_per_node, scaler=grad_scaler, ema_model=ema_model)
 
         if epoch % 30 == 0 or epoch == args.epochs - 1:
+            ema_model.ema_swap(model)
             top1 = validate(model, args, epoch)
+            ema_model.ema_swap(model)
         else:
             top1 = 0
 
         wandb.log(wandb_metrics)
 
-        scheduler.step()
+        if args.ls_type == "alrs":
+            scheduler.step(now_loss)
+        else:
+            scheduler.step()
 
         # remember best acc@1 and save checkpoint
         is_best = top1 > args.best_acc1
@@ -264,7 +318,6 @@ def main_worker(gpu, ngpus_per_node, args):
             'state_dict': model.state_dict(),
             'best_acc1': args.best_acc1,
             'optimizer': optimizer.state_dict(),
-            'scheduler': scheduler.state_dict(),
         }, is_best, output_dir=args.output_dir)
 
     wandb.finish()
@@ -276,11 +329,10 @@ def adjust_bn_momentum(model, iters):
             m.momentum = 1 / iters
 
 
-def train(model, args, epoch=None, gpu=0, ngpus_per_node=1, scaler=None):
+def train(model, args, epoch=None, gpu=0, ngpus_per_node=1, scaler=None, ema_model=None):
     objs = AverageMeter()
     top1 = AverageMeter()
     top5 = AverageMeter()
-
     optimizer = args.optimizer
     scheduler = args.scheduler
     loss_function_kl = nn.KLDivLoss(reduction='batchmean')
@@ -352,8 +404,8 @@ def train(model, args, epoch=None, gpu=0, ngpus_per_node=1, scaler=None):
             top1.update(prec1.item(), n)
             top5.update(prec5.item(), n)
         optimizer.step()
-        # scaler.step(optimizer)
-        # scaler.update()
+        if ema_model is not None:
+            ema_model.ema_step(decay_rate=args.ema_dr,model=model)
 
     metrics = {
         "train/loss": objs.avg,
@@ -369,6 +421,7 @@ def train(model, args, epoch=None, gpu=0, ngpus_per_node=1, scaler=None):
                 'train_time = {:.6f}'.format((time.time() - t1))
     print(printInfo)
     t1 = time.time()
+    return objs.avg
 
 
 def validate(model, args, epoch=None):

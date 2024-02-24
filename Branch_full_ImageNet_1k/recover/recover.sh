@@ -1,9 +1,9 @@
-CUDA_VISIBLE_DEVICES=0,1,2,3 python closeness.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 python recover.py \
     --arch-name "resnet18" \
-    --exp-name "CSDC_b5_closeness2_IPC_10" \
+    --exp-name "CSDC_b5_closeness_IPC_10" \
     --batch-size 80 \
     --lr 0.05 \
-    --ipc-number 10 --training-momentum 0.8 --closeness \
+    --ipc-number 10 --training-momentum 0.8 --flatness \
     --iteration 2000 \
     --train-data-path /home/sst/imagenet/train/ \
     --l2-scale 0 --tv-l2 0 --r-loss 0.01 --nuc-norm 1. \

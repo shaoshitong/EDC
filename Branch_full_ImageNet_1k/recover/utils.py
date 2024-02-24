@@ -198,31 +198,31 @@ class BNFeatureHook():
             self.counter[cls] += 1
 
     def post_hook_fn(self, module, input, output):
+        if self.ema_tag:
+            return
         nch = input[0].shape[1]
         bs = input[0].shape[0]
         input_0 = input[0]
         mean = input_0.mean([0, 2, 3])
         var = (input_0.permute(1, 0, 2, 3).contiguous().reshape([nch, -1])).var(1, unbiased=False)
+        with torch.no_grad():
+            if isinstance(self.dd_var, int):
+                self.dd_var = var
+                self.dd_mean = mean
+            else:
+                self.dd_var = self.momentum * self.dd_var + (1 - self.momentum) * var
+                self.dd_mean = self.momentum * self.dd_mean + (1 - self.momentum) * mean
+        r_feature = (torch.norm(module.running_var.data - (self.dd_var + var - var.detach()), 2) + \
+                    torch.norm(module.running_mean.data - (self.dd_mean + mean - mean.detach()), 2)) * 0.5
 
-        if not self.ema_tag:
-            with torch.no_grad():
-                if isinstance(self.dd_var, int):
-                    self.dd_var = var
-                    self.dd_mean = mean
-                else:
-                    self.dd_var = self.momentum * self.dd_var + (1 - self.momentum) * var
-                    self.dd_mean = self.momentum * self.dd_mean + (1 - self.momentum) * mean
-            r_feature = (torch.norm(module.running_var.data - (self.dd_var + var - var.detach()), 2) + \
-                        torch.norm(module.running_mean.data - (self.dd_mean + mean - mean.detach()), 2)) * 0.25
+        category_dd_var = self.category_running_dd_var_list[self.targets.long()].mean(0)
+        category_dd_mean = self.category_running_dd_mean_list[self.targets.long()].mean(0)
 
-            category_dd_var = self.category_running_dd_var_list[self.targets.long()].mean(0)
-            category_dd_mean = self.category_running_dd_mean_list[self.targets.long()].mean(0)
+        r_feature += (torch.norm(category_dd_var - (self.dd_var + var - var.detach()), 2) + \
+                    torch.norm(category_dd_mean - (self.dd_mean + mean - mean.detach()), 2)) * 0.5
 
-            r_feature += (torch.norm(category_dd_var - (self.dd_var + var - var.detach()), 2) + \
-                        torch.norm(category_dd_mean - (self.dd_mean + mean - mean.detach()), 2)) * 0.75
-
-            self.r_feature = r_feature
-        
+        self.r_feature = r_feature
+    
     def close(self):
         self.hook.remove()
 
@@ -376,7 +376,7 @@ class ConvFeatureHook():
 
 
     def post_hook_fn(self, module, input, output):
-        if random.random() > (1. - self.drop_rate):
+        if random.random() > (1. - self.drop_rate) or self.ema_tag:
             self.r_feature = torch.Tensor([0.]).to(input[0].device)
             return
         nch = input[0].shape[1]
@@ -388,43 +388,36 @@ class ConvFeatureHook():
         new_input_0 = F.interpolate(input_0, [new_h, new_w], mode="bilinear")
         new_input_0 = einops.rearrange(new_input_0, "b c (u h) (v w) -> (u v) (b c h w)", h=16, w=16).contiguous()
         patch_mean = new_input_0.mean([1])
-        patch_var = new_input_0.var([1], unbiased=False)
+        patch_var = new_input_0.var([1], unbiased=False)        
+        with torch.no_grad():
+            if isinstance(self.dd_var, int):
+                self.dd_var = dd_var
+                self.dd_mean = dd_mean
+                self.patch_var = patch_var
+                self.patch_mean = patch_mean
+            else:
+                self.dd_var = self.momentum * self.dd_var + (1 - self.momentum) * dd_var
+                self.dd_mean = self.momentum * self.dd_mean + (1 - self.momentum) * dd_mean
+                self.patch_var = self.momentum * self.patch_var + (1 - self.momentum) * patch_var
+                self.patch_mean = self.momentum * self.patch_mean + (1 - self.momentum) * patch_mean
 
-        """
-        dd_mean = input_0.mean([2, 3])
-        dd_var = input_0.view(bs, nch, -1).var(2, unbiased=False)
-        """
-        
-        if not self.ema_tag:
-            with torch.no_grad():
-                if isinstance(self.dd_var, int):
-                    self.dd_var = dd_var
-                    self.dd_mean = dd_mean
-                    self.patch_var = patch_var
-                    self.patch_mean = patch_mean
-                else:
-                    self.dd_var = self.momentum * self.dd_var + (1 - self.momentum) * dd_var
-                    self.dd_mean = self.momentum * self.dd_mean + (1 - self.momentum) * dd_mean
-                    self.patch_var = self.momentum * self.patch_var + (1 - self.momentum) * patch_var
-                    self.patch_mean = self.momentum * self.patch_mean + (1 - self.momentum) * patch_mean
+        r_feature = (torch.norm(self.running_dd_var - (self.dd_var + dd_var - dd_var.detach()), 2) + \
+                    torch.norm(self.running_dd_mean - (self.dd_mean + dd_mean - dd_mean.detach()), 2) + \
+                    torch.norm(self.running_patch_mean - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
+                    torch.norm(self.running_patch_var - (self.patch_var + patch_var - patch_var.detach()), 2)) * 0.5
 
-            r_feature = (torch.norm(self.running_dd_var - (self.dd_var + dd_var - dd_var.detach()), 2) + \
-                        torch.norm(self.running_dd_mean - (self.dd_mean + dd_mean - dd_mean.detach()), 2) + \
-                        torch.norm(self.running_patch_mean - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
-                        torch.norm(self.running_patch_var - (self.patch_var + patch_var - patch_var.detach()), 2)) * 0.25
+        category_dd_var = self.category_running_dd_var_list[self.targets.long()].mean(0)
+        category_dd_mean = self.category_running_dd_mean_list[self.targets.long()].mean(0)
+        category_patch_var = self.category_running_patch_var_list[self.targets.long()].mean(0)
+        category_patch_mean = self.category_running_patch_mean_list[self.targets.long()].mean(0)
 
-            category_dd_var = self.category_running_dd_var_list[self.targets.long()].mean(0)
-            category_dd_mean = self.category_running_dd_mean_list[self.targets.long()].mean(0)
-            category_patch_var = self.category_running_patch_var_list[self.targets.long()].mean(0)
-            category_patch_mean = self.category_running_patch_mean_list[self.targets.long()].mean(0)
+        r_feature += (torch.norm(category_dd_var - (self.dd_var + dd_var - dd_var.detach()), 2) + \
+                    torch.norm(category_dd_mean - (self.dd_mean + dd_mean - dd_mean.detach()), 2) + \
+                    torch.norm(category_patch_mean - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
+                    torch.norm(category_patch_var - (self.patch_var + patch_var - patch_var.detach()), 2)) * 0.5
 
-            r_feature += (torch.norm(category_dd_var - (self.dd_var + dd_var - dd_var.detach()), 2) + \
-                        torch.norm(category_dd_mean - (self.dd_mean + dd_mean - dd_mean.detach()), 2) + \
-                        torch.norm(category_patch_mean - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
-                        torch.norm(category_patch_var - (self.patch_var + patch_var - patch_var.detach()), 2)) * 0.75
-
-            self.r_feature = r_feature
-        
+        self.r_feature = r_feature
+    
     def close(self):
         self.hook.remove()
 

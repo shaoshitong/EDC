@@ -45,32 +45,6 @@ def shift_list(lst, shift_count):
         new_lst.append(i)
     return new_lst
 
-def get_optimum_points(args,inputs,targets,loss_r_feature_layers,model_teacher,criterion):
-    optimum_points = []
-    lim_0, lim_1 = args.jitter, args.jitter
-    for id in range(len(args.aux_teacher)):
-        _inputs = inputs.clone().detach()
-        _inputs.requires_grad_(True)
-        suboptimizer = optim.Adam([_inputs], lr=args.lr, betas=[0.5, 0.9], eps=1e-8)
-        for _iteration in range(100):
-            suboptimizer.zero_grad()
-            aug_function = transforms.Compose([
-                        transforms.RandomResizedCrop(224),
-                        transforms.RandomHorizontalFlip(),
-                    ])
-            inputs_jit = aug_function(_inputs)
-            sub_outputs = model_teacher[id](inputs_jit)
-            loss_ce = criterion(sub_outputs, targets)
-            rescale = [args.first_multiplier] + [1. for _ in range(len(loss_r_feature_layers[id]) - 1)]
-            loss_r_feature = sum([mod.r_feature * rescale[idx] for (idx, mod) in enumerate(loss_r_feature_layers[id])])
-            loss = loss_ce + args.r_loss * loss_r_feature
-            print(f"it{_iteration} loss",loss.item())
-            loss.backward()
-            suboptimizer.step()
-        optimum_points.append(_inputs.clone().detach())
-        print(f"Closeness Finish {id}")
-    return optimum_points
-
 def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id_range):
     args.gpu = gpu
     print("Use GPU: {} for training".format(args.gpu))
@@ -217,16 +191,11 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
             true_dist = true_dist.abs()
 
         for iteration in range(iterations_per_layer):
-            if args.closeness and (iteration in [2500]):
-                optimum_points = get_optimum_points(args,inputs,targets,loss_r_feature_layers,model_teacher,criterion)
-                inputs = torch.stack(optimum_points,0).mean(0)
-                inputs.requires_grad_(True)
-                optimizer = optim.Adam([inputs], lr=args.lr, betas=[0.5, 0.9], eps=1e-8)
             # learning rate scheduling
             lr_scheduler(optimizer, iteration, iteration)
 
             aug_function = transforms.Compose([
-                transforms.RandomResizedCrop(224),
+                transforms.RandomResizedCrop(224,scale=(0.5,1)),
                 transforms.RandomHorizontalFlip(),
             ])
             inputs_jit = aug_function(inputs)
@@ -385,12 +354,8 @@ def main_syn():
     """Data save flags"""
     parser.add_argument('--flatness', action='store_true', default=False,
                         help='encourage the flatness or not')
-    parser.add_argument('--flatness-weight', type=float, default=0.25,
+    parser.add_argument('--flatness-weight', type=float, default=1.,
                         help='the weight of flatness weight')
-    parser.add_argument('--closeness', action='store_true', default=False,
-                        help='encourage the closeness or not')
-    parser.add_argument('--closeness-weight', type=float, default=1.,
-                        help='the weight of closeness weight')
     parser.add_argument('--ema_alpha', type=float, default=0.9,
                         help='the weight of EMA learning rate')
     parser.add_argument('--exp-name', type=str, default='test',
