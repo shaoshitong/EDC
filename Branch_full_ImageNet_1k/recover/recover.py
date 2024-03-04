@@ -82,7 +82,8 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                 _hook_module = BNFeatureHook(module,save_path=args.statistic_path,
                                             name=full_name,
                                             gpu=gpu,training_momentum=args.training_momentum,
-                                            flatness_weight=args.flatness_weight)
+                                            flatness_weight=args.flatness_weight,
+                                            category_aware=args.category_aware)
                 _hook_module.set_hook(pre=True)
                 load_tag = load_tag & _hook_module.load_tag
                 load_tag_dict[i] = load_tag_dict[i] & _hook_module.load_tag
@@ -93,7 +94,8 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                                                name=full_name,
                                                gpu=gpu, training_momentum=args.training_momentum,
                                                drop_rate=args.drop_rate,
-                                               flatness_weight=args.flatness_weight)
+                                               flatness_weight=args.flatness_weight,
+                                               category_aware=args.category_aware)
                 _hook_module.set_hook(pre=True)
                 load_tag = load_tag & _hook_module.load_tag
                 load_tag_dict[i] = load_tag_dict[i] & _hook_module.load_tag
@@ -109,6 +111,14 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                                                                                   std=[0.229, 0.224, 0.225]),
                                                              ShufflePatches(2)],
                                                              ))
+    if args.category_aware == "local":
+        original_img_cache = PreImgPathCache(args.train_data_path,transforms=transforms.Compose([
+                                                                transforms.Resize((224,224)),
+                                                                transforms.RandomHorizontalFlip(),
+                                                                transforms.ToTensor(),
+                                                                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                                                    std=[0.229, 0.224, 0.225]),]
+                                                                ))
     if not load_tag:
         train_dataset = torchvision.datasets.ImageFolder(root=args.train_data_path,
                                                          transform=transforms.Compose([
@@ -172,34 +182,32 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
         else:
             inputs = torch.randn((sub_batch_size, 3, 224, 224), requires_grad=True, device=f'cuda:{gpu}',
                                  dtype=data_type)
-
+        
+        if args.category_aware == "local":
+            expand_ratio = int(1281167 / (args.ipc_number*1000))
+            tea_images = torch.stack([original_img_cache.random_img_sample(_target) for _target in (targets.tolist() * expand_ratio)],0).to(f'cuda:{gpu}').to(data_type)
+            with torch.no_grad():
+                for id in range(len(args.aux_teacher)):
+                    for (idx, mod) in enumerate(loss_r_feature_layers[id]):
+                        mod.set_tea()
+                    sub_outputs = model_teacher[id](tea_images)
+        
         iterations_per_layer = args.iteration
-        lim_0, lim_1 = args.jitter, args.jitter
         optimizer = optim.Adam([inputs], lr=args.lr, betas=[0.5, 0.9], eps=1e-8)
         lr_scheduler = lr_cosine_policy(args.lr, 0, iterations_per_layer)  # 0 - do not use warmup
         criterion = nn.CrossEntropyLoss()
         criterion = criterion.cuda()
-        optimum_points = []
         inputs_ema = EMA(alpha=args.ema_alpha, initial_value=inputs)
-        cosine_similarity_cache = []
-        dynamic_momentum = 0.
-        with torch.no_grad():
-            true_dist = torch.zeros(inputs.shape[0],1000).to(inputs.device)
-            true_dist.fill_(0.1 / (1000 - 1))
-            true_dist.scatter_(1, targets.unsqueeze(1), 0.9)
-            true_dist = true_dist + (torch.rand_like(true_dist) * 0.1 / (1000 - 1) - 0.05 / (1000 - 1))
-            true_dist = true_dist.abs()
 
         for iteration in range(iterations_per_layer):
             # learning rate scheduling
             lr_scheduler(optimizer, iteration, iteration)
 
             aug_function = transforms.Compose([
-                transforms.RandomResizedCrop(224,scale=(0.5,1)),
+                transforms.RandomResizedCrop(224,scale=(0.5, 1)),
                 transforms.RandomHorizontalFlip(),
             ])
             inputs_jit = aug_function(inputs)
-            inputs_ema_jit = aug_function(inputs_ema.value)
 
             # forward pass
             id = counter % len(model_teacher)
@@ -209,62 +217,26 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
             # ggs[id].generate_disturb_parameters(model_teacher[id],mean_std=[0,noise_schedule(iteration,iterations_per_layer,0.2)])
             counter += 1
             optimizer.zero_grad()
-            if args.flatness:
-                with torch.no_grad():
-                    for (idx, mod) in enumerate(loss_r_feature_layers[id]):
-                        mod.set_ema()
-                    ema_sub_outputs = model_teacher[id](inputs_ema_jit)
             for (idx, mod) in enumerate(loss_r_feature_layers[id]):
-                mod.set_ori(flatness=args.flatness)
+                mod.set_ori()
             sub_outputs = model_teacher[id](inputs_jit)
             # R_cross classification loss
             loss_ce = criterion(sub_outputs, targets)
-
             # R_feature loss
             rescale = [args.first_multiplier] + [1. for _ in range(len(loss_r_feature_layers[id]) - 1)]
             loss_r_feature = sum(
                 [mod.r_feature * rescale[idx] for (idx, mod) in enumerate(loss_r_feature_layers[id])])
-
-            if args.flatness:
-                loss_ema_ce = F.kl_div(torch.log_softmax(sub_outputs / 4, dim=1),
-                                        torch.softmax(ema_sub_outputs / 4, dim=1))
-            else:
-                loss_ema_ce = torch.Tensor([0.]).to(inputs_jit.device)
+            print("44")
+            loss_ema_ce = torch.Tensor([0.]).to(inputs_jit.device)
             
-            # Nuclear losses
-            adaptivepool = nn.AdaptiveAvgPool2d((32, 32))
-            re_inputs_jit = adaptivepool(inputs_jit).reshape(inputs_jit.shape[0], -1)
-            if zz + ngpus_per_node * sub_batch_size > total_number:
-                dist_inputs_jit = re_inputs_jit
-            else:
-                dist_inputs_jit = GatherLayer.apply(re_inputs_jit)
-                dist_inputs_jit = torch.cat(dist_inputs_jit, 0)
-
-            aux_nuc_norm_loss = 0.
-            _targets = targets_all_all[
-                turn_index[zz: min(zz + ngpus_per_node * sub_batch_size, total_number)]].cuda(gpu).int()
-            set_targets = set(_targets.tolist())
-            for i in set_targets:
-                sub_class_inputs_jit = dist_inputs_jit[_targets == i]
-                sub_class_inputs_jit = sub_class_inputs_jit @ sub_class_inputs_jit.t()
-                l = torch.linalg.eigvals(sub_class_inputs_jit).real.float()
-                stu = l.log_softmax(dim=-1)
-                tea = (l / args.tau).softmax(dim=-1)
-                aux_nuc_norm_loss += nn.KLDivLoss(reduction="sum")(stu, tea.detach())
-            nuc_norm = aux_nuc_norm_loss
-
-            # nuc_norm = tr(S), where U^TSV = input_jit
-
             # combining losses
-            loss_aux = args.nuc_norm * nuc_norm + \
-                       args.r_loss * loss_r_feature
+            loss_aux = args.r_loss * loss_r_feature
 
             loss = loss_ce + loss_aux + loss_ema_ce * args.flatness_weight
 
             if iteration % save_every == 0 and args.gpu == 0:
                 print("------------iteration {}----------".format(iteration))
                 print("total loss", loss.item())
-                print("nuc norm loss", (args.nuc_norm * nuc_norm).item())
                 print("loss_r_feature", loss_r_feature.item())
                 print("loss_ema_ce", loss_ema_ce.item())
                 print("main criterion",
@@ -275,18 +247,6 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
 
             # do image update
             (loss).backward()
-
-            with torch.no_grad():
-                _grad = inputs.grad.view(-1)
-                cosine_similarity_cache.append(_grad/torch.sqrt((_grad**2).sum()))
-                if len(cosine_similarity_cache)>len(args.aux_teacher):
-                    cosine_similarity_cache.pop(0)
-                    cosine_similarity_value = torch.stack(cosine_similarity_cache,0) # N,K 
-                    cosine_similarity_value = cosine_similarity_value @ cosine_similarity_value.T
-                    cosine_similarity_value = cosine_similarity_value[~torch.eye(cosine_similarity_value.shape[0],device=cosine_similarity_value.device).bool()].sum().item()/(
-                        cosine_similarity_value.shape[0]*cosine_similarity_value.shape[0]-cosine_similarity_value.shape[0])
-                    if iteration % save_every == 0 and args.gpu == 0:
-                        print("cosine_similarity", cosine_similarity_value)
             optimizer.step()
             # clip color outlayers
             inputs.data = clip(inputs.data)
@@ -381,6 +341,7 @@ def main_syn():
     parser.add_argument('--lr', type=float, default=0.1,
                         help='learning rate for optimization')
     parser.add_argument('--jitter', default=32, type=int, help='random shift on the synthetic data')
+    parser.add_argument('--category-aware', default="global", type=str, help='category-aware matching (local or global)')
     parser.add_argument('--r-loss', type=float, default=0.05,
                         help='coefficient for BN and Conv feature distribution regularization')
     parser.add_argument('--first-multiplier', type=float, default=10.,
