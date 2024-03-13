@@ -34,6 +34,8 @@ parser.add_argument('--world-size', default=-1, type=int,
                     help='number of nodes for distributed training')
 parser.add_argument('--temperature', default=20, type=float,
                     help='the temperature of FKD')
+parser.add_argument('--class-number', default=1000, type=int,
+                    help='the number of class used for post-training')
 parser.add_argument('--shuffle-patch', default=False, action='store_true',
                     help='if use shuffle-patch')
 parser.add_argument('--rank', default=-1, type=int,
@@ -207,7 +209,7 @@ def main_worker(gpu, ngpus_per_node, args):
         train_dataset, batch_size=args.batch_size, shuffle=(sampler is None), sampler=sampler,
         num_workers=args.workers, pin_memory=True)
 
-    for epoch in tqdm(range(args.epochs)):
+    for epoch in tqdm(range(0,args.epochs)):
         dir_path = os.path.join(args.fkd_path, 'epoch_{}'.format(epoch))
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)

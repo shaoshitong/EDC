@@ -276,7 +276,13 @@ def main_worker(gpu, ngpus_per_node, args):
                              lambda step: 0.5 * (
                                      1. + math.cos(math.pi * step / (args.st*args.epochs))) if step <= (args.st*args.epochs) else 0,
                              last_epoch=-1)
-    if args.ls_type == "alrs":
+    if args.ls_type == "cos2":
+        scheduler = LambdaLR(optimizer,
+                             lambda step: 0.5 * (
+                                     1. + math.cos(math.pi * step / (args.st*args.epochs))) if step <= (args.epochs*5/6) else 0.5 * (
+                                     1. + math.cos(math.pi * 5 / (6 * args.st))) * (6*args.epochs-6*step)/(6*args.epochs),
+                             last_epoch=-1)
+    elif args.ls_type == "alrs":
         scheduler = ALRS(optimizer,decay_rate=args.alrs_dr)
     else:
         scheduler = LambdaLR(optimizer,

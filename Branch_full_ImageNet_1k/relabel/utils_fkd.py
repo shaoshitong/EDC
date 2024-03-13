@@ -238,6 +238,20 @@ class ImageFolder_FKD_MIX(torchvision.datasets.ImageFolder):
         self.epoch = epoch
         self.load_epoch_config()
 
+    
+class ImageFolder_FKD_MIX_CL(ImageFolder_FKD_MIX):
+    def __init__(self,class_number=1000,*args,**kwargs):
+        super(ImageFolder_FKD_MIX_CL, self).__init__(*args,**kwargs)
+        self.class_number=class_number
+        self.label2img = [[] for _ in range(len(self.classes))]
+        for k, v in self.samples:
+            self.label2img[v].append(k)
+        new_samples = []
+        for i in range(class_number):
+            for j in self.label2img[i]:
+                new_samples.append((j,i))
+        self.samples = new_samples
+        self.imgs = self.samples
 
 def rand_bbox(size, lam):
     W = size[2]

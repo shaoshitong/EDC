@@ -184,7 +184,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                                  dtype=data_type)
         
         if args.category_aware == "local":
-            expand_ratio = int(1281167 / (args.ipc_number*1000))
+            expand_ratio = int(50000 / (args.ipc_number*1000))
             tea_images = torch.stack([original_img_cache.random_img_sample(_target) for _target in (targets.tolist() * expand_ratio)],0).to(f'cuda:{gpu}').to(data_type)
             with torch.no_grad():
                 for id in range(len(args.aux_teacher)):
@@ -226,7 +226,6 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
             rescale = [args.first_multiplier] + [1. for _ in range(len(loss_r_feature_layers[id]) - 1)]
             loss_r_feature = sum(
                 [mod.r_feature * rescale[idx] for (idx, mod) in enumerate(loss_r_feature_layers[id])])
-            print("44")
             loss_ema_ce = torch.Tensor([0.]).to(inputs_jit.device)
             
             # combining losses
@@ -375,7 +374,7 @@ def main_syn():
     if not os.path.exists(args.syn_data_path):
         os.makedirs(args.syn_data_path)
 
-    aux_teacher = ["resnet18","mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", "alexnet"] #  "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", "alexnet" "densenet121", "convnext_tiny"
+    aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", "alexnet"] #  "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5", "alexnet" "densenet121", "convnext_tiny"
     args.aux_teacher = aux_teacher
     model_teacher = []
     for name in aux_teacher:
