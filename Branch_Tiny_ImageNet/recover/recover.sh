@@ -1,11 +1,11 @@
 
-CUDA_VISIBLE_DEVICES=0,1 python data_synthesis_with_svd_with_db_with_all_statistic.py \
+CUDA_VISIBLE_DEVICES=1,4,5,6 python recover.py \
     --arch-name "resnet18" \
     --exp-name "GVBSM_Tiny_ImageNet_Recover_IPC_50" \
-    --batch-size 100 \
-    --lr 0.05 \
-    --ipc-number 100 \
-    --iteration 4000 \
-    --train-data-path /path/to/tiny-imagenet/ \
-    --l2-scale 0 --tv-l2 0 --r-loss 0.01 --nuc-norm 1.0 \
-    --verifier --store-best-images --gpu-id 0,1
+    --batch-size 100 --category-aware "global" \
+    --lr 0.05 --drop-rate 0.0 \
+    --ipc-number 50 --training-momentum 0.8 \
+    --iteration 2000 \
+    --train-data-path /home/chenhuanran2022/work/CSDC/Branch_Tiny_ImageNet/tiny-imagenet-200/ \
+    --r-loss 0.01 --initial-img-dir /home/chenhuanran2022/work/RDED/exp/tinyimagenet_resnet18_modified_f1_mipc300_ipc50_cr5/syn_data/ \
+    --verifier --store-best-images --gpu-id 1,4,5,6
