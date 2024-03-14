@@ -31,8 +31,7 @@ class ApplyTransformToPair:
         self.transform = transform
 
     def __call__(self, img1, img2):
-        seed = torch.random.initial_seed()
-        print(seed)
+        seed = random.randint(0,1e13)
         torch.manual_seed(seed)
         img1_transformed = self.transform(img1)
 
@@ -60,7 +59,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
         p.requires_grad = False
     hook_for_display = lambda x, y: validate(x, y, model_verifier)
 
-    save_every = 20
+    save_every = 100
     batch_size = args.batch_size
     best_cost = 1e4
     load_tag_dict = [True for i in range(len(model_teacher))]
