@@ -1,0 +1,13 @@
+CUDA_VISIBLE_DEVICES=1 python generate_soft_label_with_db.py \
+    -b 100 \
+    -j 8 \
+    --epochs 300 \
+    --fkd-seed 42 \
+    --input-size 224 \
+    --min-scale-crops 0.5 \
+    --max-scale-crops 1 \
+    --use-fp16 --candidate-number 4 \
+    --fkd-path ./FKD_CSDC_IPC_10 \
+    --mode 'fkd_save' \
+    --mix-type 'cutmix' \
+    --data '../recover/syn_data/CSDC_2nd_distill_IPC_10/'
