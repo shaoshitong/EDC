@@ -76,8 +76,7 @@ def main(args):
         raise NotImplementedError
 
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-    assert args.model in ["ResNet18", "MobileNetV2", "ShuffleNetV2_0_5", "WRN_16_2", "ConvNetW128"], f"{args.model} must be one of ResNet18, MobileNetV2, ShuffleNetV2_0_5, WRN_16_2!"
-    if args.model == "ConvNetW128":
+    if args.model in ["ConvNetW128","ConvNetD1","ConvNetD2","ConvNetW32"]:
         model = ti_get_network(args.model , channel = 3, num_classes = 100, im_size = (32, 32), dist = False)
     else:
         model = model_dict[args.model](num_classes = 100 if args.dataset == "CIFAR-100" else 10)
