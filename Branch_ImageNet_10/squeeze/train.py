@@ -69,7 +69,7 @@ def main(args):
                                 shuffle=True)
 
 
-    model = models.__dict__[args.model](pretrained=True, num_classes=1000)
+    model = models.__dict__[args.model](pretrained=False, num_classes=1000)
     if args.model == "resnet18":
         model.fc = nn.Linear(model.fc.in_features,10)
     elif args.model == "mobilenet_v2":
@@ -130,7 +130,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=128, help='batch size for training networks')
     parser.add_argument('--data_path', type=str, default='data', help='dataset path')
     parser.add_argument('--squeeze_path', type=str, default='./squeeze_wo_ema/', help='squeeze path')
-    parser.add_argument('--train_epochs', type=int, default=5)
+    parser.add_argument('--train_epochs', type=int, default=20)
     parser.add_argument('--mom', type=float, default=0.9, help='momentum')
     parser.add_argument('--l2', type=float, default=0, help='l2 regularization')
     args = parser.parse_args()

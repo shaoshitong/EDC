@@ -243,11 +243,11 @@ class BNFeatureHook():
                         self.dd_var = self.momentum * self.dd_var + (1 - self.momentum) * var
                         self.dd_mean = self.momentum * self.dd_mean + (1 - self.momentum) * mean
                 r_feature = (torch.norm(module.running_var.data - (self.dd_var + var - var.detach()), 2) + \
-                            torch.norm(module.running_mean.data - (self.dd_mean + mean - mean.detach()), 2)) * 0.0
+                            torch.norm(module.running_mean.data - (self.dd_mean + mean - mean.detach()), 2)) * 0.5
                 category_dd_var = self.category_running_dd_var_list
                 category_dd_mean = self.category_running_dd_mean_list
                 r_feature += (torch.norm(category_dd_var - (self.dd_var + var - var.detach()), 2) + \
-                            torch.norm(category_dd_mean - (self.dd_mean + mean - mean.detach()), 2)) * 1.0
+                            torch.norm(category_dd_mean - (self.dd_mean + mean - mean.detach()), 2)) * 0.5
                 self.r_feature = r_feature
             
     def close(self):
@@ -446,7 +446,7 @@ class ConvFeatureHook():
                 r_feature = (torch.norm(self.running_dd_var - (self.dd_var + dd_var - dd_var.detach()), 2) + \
                             torch.norm(self.running_dd_mean - (self.dd_mean + dd_mean - dd_mean.detach()), 2) + \
                             torch.norm(self.running_patch_mean - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
-                            torch.norm(self.running_patch_var - (self.patch_var + patch_var - patch_var.detach()), 2)) * 0.0
+                            torch.norm(self.running_patch_var - (self.patch_var + patch_var - patch_var.detach()), 2)) * 0.5
 
                 category_dd_var = self.category_running_dd_var_list
                 category_dd_mean = self.category_running_dd_mean_list
@@ -455,7 +455,7 @@ class ConvFeatureHook():
                 r_feature += (torch.norm(category_dd_var - (self.dd_var + dd_var - dd_var.detach()), 2) + \
                             torch.norm(category_dd_mean - (self.dd_mean + dd_mean - dd_mean.detach()), 2) + \
                             torch.norm(category_patch_mean - (self.patch_mean + patch_mean - patch_mean.detach()), 2) + \
-                            torch.norm(category_patch_var - (self.patch_var + patch_var - patch_var.detach()), 2)) * 1.0
+                            torch.norm(category_patch_var - (self.patch_var + patch_var - patch_var.detach()), 2)) * 0.5
                 self.r_feature = r_feature
         else:
             if random.random() > (1. - self.drop_rate):
@@ -570,10 +570,17 @@ class PreImgPathCache(ImageFolder):
         self.label2img = [[] for _ in range(len(self.classes))]
         for k, v in self.imgs:
             self.label2img[v].append(k)
+        for i in self.label2img:
+            print(len(i))
 
+        self.probability = [[1. for _ in range(len(self.label2img[i]))] for i in range(len(self.classes))]
+    
     def random_img_sample(self,idx):
         imgpaths = self.label2img[idx]
-        new_idx = np.random.choice(len(imgpaths),(1,),replace=False)[0]
+        p = (-torch.Tensor(self.probability[idx])).softmax(0).tolist()
+        p[-1] = 1. - sum(p[:-1]) # avoid error
+        new_idx = np.random.choice(len(imgpaths),(1,),replace=False,p=p)[0]
+        self.probability[idx][new_idx] += 1
         imgpath = imgpaths[new_idx]
         sample = self.loader(imgpath)
         if self.transform is not None:

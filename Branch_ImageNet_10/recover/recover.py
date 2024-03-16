@@ -184,7 +184,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                                  dtype=data_type)
         
         if args.category_aware == "local":
-            expand_ratio = int(12811 / (args.ipc_number*10))
+            expand_ratio = int(1000 / (args.ipc_number*10))
             tea_images = torch.stack([original_img_cache.random_img_sample(_target) for _target in (targets.tolist() * expand_ratio)],0).to(f'cuda:{gpu}').to(data_type)
             with torch.no_grad():
                 for id in range(len(args.aux_teacher)):
@@ -376,7 +376,7 @@ def main_syn():
     if not os.path.exists(args.syn_data_path):
         os.makedirs(args.syn_data_path)
 
-    aux_teacher = ["resnet18", "mobilenet_v2", "efficientnet_b0", "shufflenet_v2_x0_5"]
+    aux_teacher = ["resnet18", "mobilenet_v2","shufflenet_v2_x0_5"]    #  "efficientnet_b0", 
     args.aux_teacher = aux_teacher
     model_teacher = []
     for name in aux_teacher:
