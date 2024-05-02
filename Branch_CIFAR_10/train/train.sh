@@ -1,16 +1,15 @@
 # wandb disabled
 wandb enabled
 wandb offline
-    
-CUDA_VISBLE_DEVICES=0 python train_FKD.py \
-    --wandb-project 'final_rn18_fkd' \
-    --batch-size 100 \
+
+CUDA_VISIBLE_DEVICES=0 python direct_train.py \
+    --wandb-project 'final_RN18_fkd' \
+    --batch-size 10 --epochs 1000 \
     --model "ResNet18" \
-    --cos --loss-type "mse_gt" --ce-weight 0.15 \
-    -j 4 --gradient-accumulation-steps 1 \
-    -T 20 --sgd-lr 0.01 --adamw-lr 0.001 \
-    --mix-type 'cutmix' \
-    --output-dir ./save/final_rn18_fkd/ \
-    --train-dir ../recover/syn_data/GVBSM_CIFAR_10_Recover_IPC_10 \
-    --val-dir /path/to/ciaf-10/ \
-    --fkd-path ../relabel/FKD_cutmix_fp16FKD_IPC_10
+    --ls-type multisteplr --loss-type "mse_gt" --ce-weight 0.025 \
+    -T 20 --sgd-lr 0.1 --adamw-lr 0.001 --gpu-id 0 \
+    -j 4 --gradient-accumulation-steps 1  --st 2 --ema-dr 0.99 \
+    --mix-type 'cutmix' --adamw-weight-decay 0.01 \
+    --output-dir ./save/final_RN18_fkd/ \
+    --train-dir ../recover/syn_data/EDC_CIFAR_10_Recover_IPC_1_backbone_8/ \
+    --val-dir '/data/cifar10/train/'

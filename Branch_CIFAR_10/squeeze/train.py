@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from baseline import get_network as ti_get_network
 from models import model_dict
+import torchvision.models as models
 
 class KDLoss(nn.KLDivLoss):
     """
@@ -76,11 +77,36 @@ def main(args):
         raise NotImplementedError
 
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-    assert args.model in ["ResNet18", "MobileNetV2", "ShuffleNetV2_0_5", "WRN_16_2", "ConvNetW128"], f"{args.model} must be one of ResNet18, MobileNetV2, ShuffleNetV2_0_5, WRN_16_2!"
-    if args.model == "ConvNetW128":
-        model = ti_get_network(args.model , channel = 3, num_classes = 10, im_size = (32, 32), dist = False)
+
+    if args.model in ["resnet18","mobilenet_v2","efficientnet_b0","shufflenet_v2_x0_5"]:
+        model = models.__dict__[args.model](pretrained=True, num_classes=1000)
+        if args.model == "resnet18":
+            model.conv1 = nn.Conv2d(
+                3, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False
+            )
+            model.maxpool = nn.Identity()
+            model.fc = nn.Linear(model.fc.in_features,10)
+        elif args.model == "mobilenet_v2":
+            model.features[0][0] = nn.Conv2d(
+                3, model.features[0][0].out_channels, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False
+            )
+            model.classifier[1] = nn.Linear(model.classifier[1].in_features,10)
+        elif args.model == "efficientnet_b0":
+            model.features[0][0] = nn.Conv2d(
+                3, model.features[0][0].out_channels, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False
+            )
+            model.classifier[1] = nn.Linear(model.classifier[1].in_features,10)
+        elif args.model == "shufflenet_v2_x0_5":
+            model.conv1 = nn.Conv2d(
+                    3, model.conv1[0].out_channels, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False
+                )
+            model.maxpool = nn.Identity()
+            model.fc = nn.Linear(model.fc.in_features,10)
     else:
-        model = model_dict[args.model](num_classes = 10)
+        if args.model == "ConvNetW128":
+            model = ti_get_network(args.model , channel = 3, num_classes = 10, im_size = (32, 32), dist = False)
+        else:
+            model = model_dict[args.model](num_classes = 10)
     # print('\n================== Exp %d ==================\n '%exp)
     print('Hyper-parameters: \n', args.__dict__)
     save_dir = os.path.join(args.squeeze_path, args.dataset, args.model)
