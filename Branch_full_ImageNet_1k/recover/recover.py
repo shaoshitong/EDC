@@ -74,7 +74,8 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
 
     for i, (_model_teacher) in enumerate(model_teacher):
         for name, module in _model_teacher.named_modules():
-            if args.aux_teacher[i] in ["wide_resnet50_2", "regnet_y_400mf", "regnet_x_400mf"]:
+            if args.aux_teacher[i] in ["wide_resnet50_2", "regnet_y_400mf", 
+            "regnet_x_400mf"]:
                 full_name = str(_model_teacher.__class__.__name__) + "_" + str(args.aux_teacher[i]) + "=" + name
             else:
                 full_name = str(_model_teacher.__class__.__name__) + "=" + name
@@ -103,14 +104,16 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
 
     sub_batch_size = int(batch_size // ngpus_per_node)
 
-    initial_img_cache = PreImgPathCache(args.initial_img_dir,transforms=transforms.Compose([
-                                                             transforms.Resize((224,224)),
-                                                             transforms.RandomHorizontalFlip(),
-                                                             transforms.ToTensor(),
-                                                             transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                                                                  std=[0.229, 0.224, 0.225]),
-                                                             ShufflePatches(2)],
-                                                             ))
+
+    if args.initial_img_dir != "None":
+        initial_img_cache = PreImgPathCache(args.initial_img_dir,transforms=transforms.Compose([
+                                                                transforms.Resize((224,224)),
+                                                                transforms.RandomHorizontalFlip(),
+                                                                transforms.ToTensor(),
+                                                                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                                                    std=[0.229, 0.224, 0.225]),
+                                                                ShufflePatches(2)],
+                                                                ))
     if args.category_aware == "local":
         original_img_cache = PreImgPathCache(args.train_data_path,transforms=transforms.Compose([
                                                                 transforms.Resize((224,224)),
@@ -176,7 +179,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
             continue
         print(f"In GPU {gpu}, targets is set as: \n{targets}\n, ipc_ids is set as: \n{ipc_ids}")
 
-        if args.initial_img_dir is not None:
+        if args.initial_img_dir != "None":
             inputs = torch.stack([initial_img_cache.random_img_sample(_target) for _target in targets.tolist()],0).to(f'cuda:{gpu}').to(data_type)
             inputs.requires_grad_(True)
         else:
@@ -243,6 +246,7 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
                 # comment below line can speed up the training (no validation process)
                 if hook_for_display is not None:
                     hook_for_display(inputs, targets)
+                best_inputs = inputs.data.clone()  # using multicrop, save the last one
 
             # do image update
             (loss).backward()
@@ -258,12 +262,13 @@ def main_worker(gpu, ngpus_per_node, args, model_teacher, model_verifier, ipc_id
             best_inputs = inputs.data.clone()  # using multicrop, save the last one
             best_inputs = denormalize(best_inputs)
             save_images(args, best_inputs, targets, ipc_ids)
+        
         # to reduce memory consumption by states of the optimizer we deallocate memory
         optimizer.state = collections.defaultdict(dict)
         torch.cuda.empty_cache()
 
 
-def save_images(args, images, targets, ipc_ids):
+def save_images(args, images, targets, ipc_ids,iter=None):
     ipc_id_range = ipc_ids
     for id in range(images.shape[0]):
         if targets.ndimension() == 1:
@@ -276,7 +281,11 @@ def save_images(args, images, targets, ipc_ids):
 
         # save into separate folders
         dir_path = '{}/new{:03d}'.format(args.syn_data_path, class_id)
-        place_to_store = dir_path + '/class{:03d}_id{:03d}.jpg'.format(class_id, ipc_id_range[id])
+        if iter is None:
+            place_to_store = dir_path + '/class{:03d}_id{:03d}.jpg'.format(class_id, ipc_id_range[id])
+        else:
+            place_to_store = dir_path + '/class{:03d}_id{:03d}_iter{:04d}.jpg'.format(class_id, ipc_id_range[id],iter)
+
         if not os.path.exists(dir_path):
             os.makedirs(dir_path, exist_ok=True)
 
@@ -320,7 +329,7 @@ def main_syn():
     parser.add_argument('--exp-name', type=str, default='test',
                         help='name of the experiment, subfolder under syn_data_path')
     parser.add_argument('--ipc-number', type=int, default=50, help='the number of each ipc')
-    parser.add_argument('--initial-img-dir', type=str, default="./syn_data/WO_OPTIM_ImageNet_1k_Recover_IPC_10", help="imgs used for initialization")
+    parser.add_argument('--initial-img-dir', type=str, default="None", help="imgs used for initialization")
     parser.add_argument('--syn-data-path', type=str,
                         default='./syn_data', help='where to store synthetic data')
     parser.add_argument('--store-best-images', action='store_true',

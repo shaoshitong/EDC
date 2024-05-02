@@ -69,8 +69,12 @@ def main(args):
                                 shuffle=True)
 
 
-    model = models.__dict__[args.model](pretrained=False, num_classes=1000)
+    model = models.__dict__[args.model](pretrained=True, num_classes=1000)
     if args.model == "resnet18":
+        model.conv1 = nn.Conv2d(
+                3, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False
+            )
+        model.maxpool = nn.Identity()
         model.fc = nn.Linear(model.fc.in_features,10)
     elif args.model == "mobilenet_v2":
         model.classifier[1] = nn.Linear(model.classifier[1].in_features,10)

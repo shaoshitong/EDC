@@ -33,6 +33,10 @@ def div_sixteen_mul(v):
     return int(v // 16 * 16) + int(m > 0) * 16
 
 
+class10 = ['n02869837','n01749939','n02488291',
+            'n02107142','n13037406','n02091831',
+            'n04517823','n04589890','n03062245','n01773797']
+
 def lr_cosine_policy(base_lr, warmup_length, epochs):
     def _lr_fn(iteration, epoch):
         if epoch < warmup_length:
